@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-24 (revised 2026-09-27: Claim your XBT added to v1; revised
 2026-09-29 at owner's request: Wren PIN app lock, Face ID optional)
-**Status:** Approved by owner 2026-09-28; 2026-09-29 revision requested by owner
+**Status:** Approved by owner 2026-09-28; 2026-09-29 revision requested by owner; amended 2026-10-08 after the Gate A review (see `docs/superpowers/reviews/2026-10-08-gate-a.md`)
 **Owner:** chans
 **Project:** XBT project, sub-project 1 of 4
 
@@ -66,7 +66,7 @@ sub-project 1 only.
 | Platforms | iOS and Android, shipped together. |
 | Architecture | React Native (Expo) app over a shared Rust engine. Chosen so the wallet, marketplace mobile app, and marketplace web app share TypeScript/React. |
 | Backup | 12-word BIP39 phrase on paper. Optional BIP39 passphrase under advanced settings. No cloud backup. |
-| Claim your XBT | In v1. Hardware signer only: SeedSigner with the unified-sighash fork firmware, over QR. Wren never asks for, accepts, or stores a seed that holds BTC. No standalone "check for twins" tool: if a claim scan finds nothing, the user knows they have no twins. |
+| Claim your XBT | In v1. Hardware signer only: SeedSigner with the unified-sighash fork firmware, over QR. Wren never asks for, accepts, or stores a seed that holds BTC. No standalone "check for twins" tool. When a claim scan finds nothing, Wren says what it checked and why it may have missed coins. |
 | Hardware signers | Used for Claim only in v1. The everyday Wren wallet keeps its keys on the phone. Hardware signing for everyday sends comes in a later release. |
 | Network privacy | Tor built in via Arti, on by default. |
 | Default server | A project-run server on rented hosting. Users can switch to their own node. |
@@ -82,8 +82,8 @@ Four parts, each with one job:
 
 ```
 ┌─────────────────────────────────────────────┐
-│ App — React Native (Expo, dev-client build) │  screens, camera, app lock,
-│                                             │  secure storage of the seed
+│ App — React Native (Expo, dev-client build) │  screens, camera; native key vault:
+│                                             │  Wren PIN pad, sealed seed
 ├─────────────────────────────────────────────┤
 │ Bridge — generated TypeScript bindings      │  uniffi-bindgen-react-native
 ├─────────────────────────────────────────────┤
@@ -113,20 +113,26 @@ the bridge.
     Byte-exact agreement with Knots and Shrike is required (see §8).
 - **Tor:** the `arti-client` crate is embedded, with onion-service client support
   enabled. The engine opens all server connections itself, over Tor or direct
-  SSL, so the app never handles network traffic to the server.
+  SSL, so the app never handles network traffic to the server. Unencrypted
+  connections are allowed only to onion addresses. A custom SSL server with a
+  self-signed certificate is trusted by its public key (SPKI SHA-256), captured
+  over the same route the wallet uses (Tor when Tor is on).
 - **Public API**, as exposed to TypeScript:
-  - `createWallet() -> words`
-  - `restoreWallet(words, passphrase?)`
-  - `loadWallet(encryptedSeed)`
+  - `createWallet() -> words` (shown once)
+  - `restoreWallet(words, passphrase?)`, then `restoreCheck()` and `finishSetup()`
+  - `confirmBackup(answers)`
+  - `unlock()`, `lock()`
+  - `revealWords()` (always asks for the Wren PIN)
+  - `changePin()`
   - `sync()`
-  - `balance()`
-  - `transactions()`
+  - `balance() -> { spendable, incomingPending, immature }`
+  - `transactions()` (each with a confirmation count)
   - `nextReceiveAddress()`
   - `buildPayment(address, amount | sendAll, feeRate) -> reviewSummary`
-  - `signAndBroadcast(reviewId)`
+  - `signAndBroadcast(reviewId) -> Sent | Rejected(reason) | Unknown`
   - `bumpFee(txid, newFeeRate)`
-  - `feeEstimates()`
-  - `setServer(config)`
+  - `feeEstimates() -> slow, normal, fast, unreliable`
+  - `setServer(config)`, `setTor(on)`, `probeCertificate(host, port)`
   - `connectionStatus()`
   - `parsePaymentLink(uri)`
   - `makePaymentLink(address, amount?)`
@@ -135,8 +141,11 @@ the bridge.
     - `claimStart(xpubQr) -> claimId`
     - `claimScan(claimId, searchFurther?) -> foundSummary`
     - `claimBuild(claimId, destination, feeRate) -> reviewSummary + unsignedPsbtQr`
-    - `claimFinish(claimId, signedPsbtQr) -> txids`
+    - `claimFinish(claimId, signedPsbtQr) -> per-transaction Sent | Rejected(reason) | Unknown`
     - `claimCancel(claimId)`
+- Sending asks the phone's key vault for the Wren PIN (or Face ID/fingerprint)
+  inside the engine itself, so the app can never sign on its own. Between actions
+  the engine holds no private key.
 - **QR transport:** animated BC-UR encoding and decoding of PSBTs and xpubs lives
   in the engine, so the app only passes QR frames through.
 
@@ -144,22 +153,30 @@ the bridge.
 
 `uniffi-bindgen-react-native` generates the TypeScript/JSI bindings for iOS and
 Android from the engine's UniFFI interface. The app calls engine functions and
-receives plain results. It never receives keys.
+receives plain results. It never receives keys, the Wren PIN, or the key that
+unlocks the seed. The 12 words pass through the app only three times: when they
+are shown at Create, typed at Restore, and shown by View recovery phrase after
+the Wren PIN.
 
 ### 3.3 App (React Native, Expo)
 
 - Expo with a dev-client/prebuild workflow, required for the native Rust module.
-- The seed is stored encrypted (see App lock, §4) with `expo-secure-store`,
-  device-only (iOS `WHEN_UNLOCKED_THIS_DEVICE_ONLY`, Android Keystore). It is
-  excluded from iCloud and Google backups.
-- The hardware-bound key behind the Wren PIN lives in the Secure Enclave (iOS) or
-  a non-exportable Keystore key, StrongBox where available (Android). Expo has no
-  built-in for this, so it needs a small native module.
+- The engine encrypts the seed. Wren's own native key-vault module (Swift on
+  iOS, Kotlin on Android) keeps the encrypted seed on this phone only (Keychain
+  "this device only" on iOS, private no-backup storage on Android). It is never
+  in iCloud or Google backups. The app's JavaScript cannot read, change, or
+  delete it.
+- The Wren PIN pad and the final "Confirm send" sheet are native screens. The
+  PIN is never typed into the app's JavaScript, and the confirm sheet shows
+  exactly what the engine will sign.
+- The key behind the Wren PIN lives in the Secure Enclave (iOS) or a
+  non-exportable Keystore key, StrongBox where available (Android).
 - The optional Face ID/fingerprint shortcut uses a biometric-only
   Keychain/Keystore item with **no device-passcode fallback**. The fallback is
   always the Wren PIN.
 - `expo-camera` handles QR scanning.
-- `expo-screen-capture` blocks screenshots on seed screens.
+- `expo-screen-capture` blocks screenshots on seed screens (always on Android;
+  on iOS as far as the system allows).
 - No analytics, no remote crash reporting, no third-party SDKs that make network
   calls.
 
@@ -170,6 +187,11 @@ Payment links use an **XBT-only URI scheme, `xbt:`**, in the form
 on the same phone can never open an Wren Wallet payment request and pay on the
 wrong chain. The app registers as the handler for `xbt:`. Later, the marketplace
 will use this same scheme for one-tap payment.
+
+A plain address, scanned or pasted without `xbt:`, is accepted, but Send warns:
+"This is a plain address. Make sure the person expects **XBT (BLAKE2b chain)**,
+not BTC." "XBT" is also used for BTC on some exchanges, so the app labels the
+coin "XBT (BLAKE2b chain)" wherever a mix-up would cost money.
 
 ### 3.5 Repository layout
 
@@ -190,64 +212,111 @@ WrenWallet/
 - **Backup check:** the user confirms three random words. Receiving works
   immediately. **Sending stays locked** until the backup check passes, and a Home
   banner stays up until then.
-- **Storage:** the seed is encrypted in the Keychain/Keystore, device-only, and
-  never in cloud backups.
+- **Storage:** the engine encrypts the seed, and Wren's native key vault keeps it
+  on this phone only, never in cloud backups.
 - **App lock: Wren PIN, with optional Face ID or fingerprint.**
-  - Every wallet has a **Wren PIN**: 6 digits, set during Create or Restore,
-    entered twice, and separate from the phone's own passcode. Obvious PINs (one
-    repeated digit, straight runs such as 123456 or 654321) are refused.
+  - Every wallet has a **Wren PIN**: 6 digits by default, set during Create or
+    Restore, entered twice, and separate from the phone's own passcode. In
+    Settings the user can switch to a longer PIN: 8 to 12 digits, or a passcode
+    with letters. Obvious PINs (one repeated digit, straight runs such as 123456
+    or 654321) are refused at every length.
   - Face ID or fingerprint is an **optional shortcut**, off unless the user turns
     it on. The Wren PIN always works in its place. The phone's passcode never
     unlocks Wren.
   - Every app open and every send asks for the Wren PIN, or biometrics if turned
     on. Viewing the recovery phrase, changing the PIN, and turning biometrics on
-    or off **always require the PIN**.
+    or off **always require the PIN**. Wren locks itself when the user leaves the
+    app and after 5 minutes without use.
   - Adding a new face or fingerprint to the phone turns the shortcut off until
     the user turns it back on with the PIN, so a face added by someone else
     never opens Wren.
-  - **The PIN cannot be guessed off the phone.** The seed's encryption key comes
-    from the PIN (Argon2id) combined with a hardware-bound key that never leaves
-    the phone's security chip. A copy of the app's storage is useless on its own,
-    and every guess must run on that phone.
+  - **How the PIN protects the seed.** The seed is locked with a key made from
+    two parts. The first is the Wren PIN, slowed down on purpose (Argon2id, about
+    1 second per try on the slowest supported phone). The second is a result that
+    only this phone's security chip can produce, and that changes with every PIN
+    tried. So every guess needs this exact phone.
+  - **What that means in practice:**
+    - A copy of Wren's storage or a phone backup is useless anywhere else.
+    - Someone holding the locked phone gets 5 tries, then growing waits.
+    - Someone who can run their own code inside Wren on that phone (for example
+      on a jailbroken or rooted phone) is not slowed by the waits. They can try
+      every 6-digit PIN in roughly a week. A longer PIN makes that take years.
+    - Face ID and fingerprint are protected by the phone's own hardware limits.
   - **Wrong PIN:** after 5 wrong tries, waits grow: 1 minute, 5 minutes,
-    15 minutes, 1 hour, then 24 hours per try. The counter lives in secure
-    storage, so restarting the app does not reset it. Wren never auto-erases
-    the wallet, because that could destroy coins the user has not backed up yet.
+    15 minutes, 1 hour, then 24 hours per try. Each try is counted and saved
+    before it is checked, so closing the app mid-try still counts. Waits are
+    timed by the phone's internal clock, so changing the date or time does not
+    shorten them; restarting the phone starts the current wait again. The
+    counter is kept on this phone only. Wren never auto-erases the wallet,
+    because that could destroy coins the user has not backed up yet.
+  - **Typing safety:** the Wren PIN uses Wren's own number pad, never the phone
+    keyboard. The 12-word field turns off autocorrect, spell-check, word
+    suggestions, autofill and keyboard learning. On iOS, Wren does not allow
+    third-party keyboards anywhere in the app. On Android, Wren asks the keyboard
+    not to learn or suggest, but cannot block third-party keyboards.
+  - **App switcher:** when Wren leaves the screen, it is covered with a solid
+    cover, so the recovery phrase, balance and addresses never show in the
+    recent-apps view.
   - **Forgotten PIN:** there is no reset. The user deletes the app and restores
     from the 12 words. Onboarding says so when the PIN is created.
-  - **Reinstall:** iOS keeps Keychain items after an app is deleted. On first
-    launch Wren wipes any leftover items, so an old seed or PIN counter never
-    carries over.
+  - **Wallet from an earlier install:** iOS can keep Wren's saved seed after the
+    app is deleted. If Wren finds one, it never deletes it silently. It shows: "A
+    Wren wallet from an earlier install is on this phone. Unlock it with its Wren
+    PIN, or delete it." Deleting needs the user to type a confirmation and warns:
+    "Only delete it if you have your 12 words." The wrong-PIN count carries over.
+    After unlocking, sending stays locked until the backup check is done again.
   - Argon2id settings and the wait schedule are flagged for Gate B and the
     external security review.
 - **Replay-safe signing is always on.** Every transaction is signed with
   SIGHASH_UNIFIED. There is no setting to disable it. A transaction signed this
   way is invalid on the main chain, so even coins from before the split cannot
   be replayed.
-- **Wrong-chain guard:** on connect, the engine fetches the header at the fork's
-  BLAKE2b activation height and independently verifies it as a valid 164-byte
-  BLAKE2b header. It also checks the recent chain tip the same way. The
-  activation height is pinned in the engine from the final signed fork Knots
-  release. The engine does not rely on the server's own claims, because not
-  every fork indexer reports its fork point. It **refuses** any server that
-  fails, including every main-chain server. Sending is impossible without a
-  verified fork connection.
+- **Wrong-chain guard:** on every connect, the engine fetches the server's header
+  at the fork's BLAKE2b activation height and checks that it is a valid 164-byte
+  BLAKE2b header matching the pinned checkpoint. It then verifies every header
+  from the pinned split block to the server's tip. A connection counts as
+  verified only when that chain has reached activation and carries at least the
+  minimum total work pinned from the signed fork Knots release. The engine does
+  not rely on the server's own claims, because not every fork indexer reports
+  its fork point. It **refuses** any server that fails, including every
+  main-chain server and any server that has not reached activation. Sending is
+  impossible without a verified fork connection. When a server offers a
+  different branch, the engine switches only to a fully verified branch with
+  more total work, never more than 144 blocks back. Confirmations of coins from
+  before the split count only when the server proves the block against a pinned
+  checkpoint of the shared pre-split history; otherwise those coins are shown as
+  unverified and cannot be claimed.
 - **Addresses:** native SegWit (P2WPKH), BIP84 path `m/84'/0'/0'`, which matches
   Shrike and Sparrow. Any Wren Wallet seed can be restored in Shrike, so users are
   never stranded if the app disappears. This is the same path main-chain wallets
-  use, kept on purpose for restorability; the Restore warning below prevents the
-  mix-up it could cause.
+  use, kept on purpose for restorability; the Restore warning and the BTC-seed
+  check below guard against the mix-up it could cause.
 - **Restore warning:** the Restore screen states: "Only restore a seed that holds
   XBT alone. Never type a seed that holds BTC into Wren or any phone app. To
   move XBT twins from a BTC wallet, use Claim." Restoring a BTC seed would put
   it on an online phone and reveal its addresses to the fork server.
+- **BTC-seed check:** after the restore scan, and before anything is saved, Wren
+  looks for wallet activity from before the split (block 961,632). If it finds
+  any, this phrase was used for bitcoin and holds or held BTC. Wren does not
+  save it and shows: "This recovery phrase was used for bitcoin before the
+  split, so it holds or held BTC. Wren will not keep it. Typing it into a phone
+  put your BTC at risk: move your BTC to a new wallet with your hardware wallet
+  now. To claim the XBT twins, use Claim with a hardware signer, or restore this
+  phrase in Shrike on a computer." If such activity only shows up later, Wren
+  blocks all sending except one "Send all" to move the XBT out, after the user
+  confirms they understand. Wren cannot spot a phrase that was only used for
+  bitcoin after the split, so the Restore warning stays.
 - **Address formats are shared between chains.** No address can reveal its chain.
   Wrong-chain protection therefore comes from the `xbt:` scheme and the server
   check, not from address validation.
 - **Send review:** the full address is shown (never truncated), along with the
   amount, fee, and a "Replay-safe" badge. An address that came from the clipboard
   is flagged with "Pasted — check every character," because clipboard-swapping
-  malware is common.
+  malware is common. The review shows a "To yourself" notice when the
+  destination is one of the wallet's own addresses. When the fee is 10% or more
+  of the amount, or the rate is above 200 sat/vB, it asks for a second
+  confirmation. Wren never builds a payment above 1,000 sat/vB. Server error
+  text is never shown; Wren uses its own fixed messages.
 
 ### 4.1 Claim safety
 
@@ -262,28 +331,40 @@ controls the user's BTC, so the rules are strict:
   storage. It is wiped when the claim finishes, is cancelled, or the app closes.
   A closed app means the claim starts over.
 - **Scanning:** receive and change chains, stopping after 20 unused addresses in
-  a row, with a "Search further" option for wallets with gaps. Queries go to the
-  fork server over Tor. The server sees the scanned addresses (as script hashes),
-  never the xpub.
+  a row, with a "Search further" option for wallets with gaps. **Claim requires
+  Tor.** The scan and the broadcast run on their own Tor circuit and Electrum
+  session, never the one the Wren wallet uses, so the server can't link the
+  claimed wallet to the Wren wallet. If Tor is off, Claim says "Claim needs Tor.
+  Turn on Tor in Settings." The server sees the scanned addresses (as script
+  hashes), never the xpub. The server must prove pre-split coins with a
+  checkpoint proof; coins it can't prove are listed as not claimable.
 - **Supported wallet types:** only the script types the pinned fork firmware can
   sign with SIGHASH_UNIFIED. Native SegWit (`bc1q`) is expected; legacy (`1…`),
   nested SegWit (`3…`), and Taproot (`bc1p`) must be confirmed against the
   firmware during planning. Unsupported types are named before scanning starts,
-  never discovered halfway through.
+  never discovered halfway through. An export that includes any other type
+  (multisig, Taproot with scripts) is refused as a whole, naming the type.
 - **Unsigned claim:** every input's PSBT sighash field is set to SIGHASH_UNIFIED.
-  All found coins are swept; there is no change output.
+  All found coins are swept; there is no change output. Coins worth less than the
+  fee to move them, unconfirmed coins, coins not yet mature and coins the server
+  couldn't prove are left out and listed with the reason. Each claim transaction
+  pays a fresh address in the Wren wallet.
 - **Verification before broadcast.** All must pass, or nothing is sent:
   1. Every signature uses SIGHASH_UNIFIED.
   2. Every signature is valid against the fork's signature digest.
   3. The inputs are exactly the coins found in the scan.
   4. The destination and amount are exactly what the user reviewed.
   5. The fee is exactly what the user chose.
-- **Wrong signature type:** if the signer returns a normal signature, Wren refuses
-  it with: "Your signer made a normal signature, which could also move your BTC.
-  Wren blocked it. Your signer needs the fork firmware — see the guide."
-- **Many coins:** if one transaction would exceed standard size, the claim is
-  split into several transactions, signed one after another. The review screen
-  says so before signing starts.
+- **Unsafe signature:** if any signature could be valid on the BTC chain (a
+  normal signature, or a 0x21 byte over a normal digest), Wren sends nothing,
+  wipes the scanned QR data, and shows the "Stop" screen (§5, Claim step 8).
+  Signatures that are simply wrong get "A signature doesn't check out. Nothing
+  was sent."
+- **Many coins:** the claim is split so that each transaction's QR stays small
+  enough for the SeedSigner to scan (a 50 kB PSBT limit to start, set by device
+  testing), and so no transaction exceeds standard size. The transactions are
+  signed one after another. The review screen says how many there are before
+  signing starts.
 
 ---
 
@@ -304,58 +385,102 @@ controls the user's BTC, so the rules are strict:
      (or fingerprint), with "Turn on" and "Not now."
   5. Home.
 - **Restore:** the Restore warning (§4), 12-word entry with BIP39 autocomplete, a
-  passphrase field under "Advanced," the Wren PIN setup (Create, step 4), then
-  a history scan.
+  passphrase field under "Advanced," a history scan with the BTC-seed check
+  (§4), then the Wren PIN setup (Create, step 4). Restoring needs a verified
+  server connection; nothing is saved until the check passes.
 - **Home:**
-  - The XBT balance as the centerpiece on a frosted panel, with a sats toggle.
+  - The spendable XBT balance as the centerpiece on a frosted panel, with a sats
+    toggle. Unconfirmed incoming payments appear on a separate "Incoming
+    (unconfirmed)" line and become spendable only once confirmed. The wallet's
+    own unconfirmed change counts as spendable.
   - Send and Receive buttons, plus a "Claim XBT" entry.
   - A recent activity list.
-  - A status line showing the Tor and server connection.
+  - A status line showing the route actually in use (Tor or direct), the server
+    connection and Tor start-up progress, with a warning when the server's latest
+    block is more than 2 hours old.
   - No USD value. XBT markets are too thin for a reliable price.
 - **Receive:** QR code and address, copy and share buttons, and a fresh address
-  each time. An optional amount builds an `xbt:` link.
+  each time, until 10 shown addresses are still unpaid. From then on Wren shows
+  the oldest unpaid address again, so a restore from the 12 words always finds
+  every payment. An optional amount builds an `xbt:` link.
 - **Send:**
   1. Scan a QR code or paste an address, with the clipboard flag.
   2. Enter an amount, or choose "Send all."
-  3. Choose a fee: slow, normal, or fast from server estimates, or custom.
+  3. Choose a fee: slow, normal, or fast from server estimates, or custom (1 to
+     1,000 sat/vB). If the server's estimates look unreasonable, Wren uses the
+     minimum fee and says so.
   4. Review, with the Replay-safe badge.
-  5. Confirm with the Wren PIN, or Face ID/fingerprint if turned on.
-  6. Success screen.
-- **Speed up:** a pending outgoing payment offers "Speed up" (RBF fee bump).
+  5. Confirm on Wren's native confirm sheet with the Wren PIN, or Face
+     ID/fingerprint if turned on.
+  6. Result: "Sent". Or "Sent, but the server did not confirm it" (Wren keeps
+     rebroadcasting; *Speed up* stays available). Or "The server rejected it:
+     <reason>" (the payment stays listed; *Speed up* re-sends the same coins, so
+     it can never pay twice).
+- **Speed up:** offered only on a pending payment signed by this wallet's own
+  key, including one whose result was "not confirmed" or "rejected". It replaces
+  the payment by re-spending the same coins at a higher fee (RBF).
 - **Claim XBT** (rules in §4.1). Cancel at any step wipes the xpub and sends
   nothing.
   1. Intro cards: what twins are (one sentence), why claiming needs a hardware
      signer, "Wren will never ask for your seed words. Anyone who does is a
      scammer," and a link to the SeedSigner guide.
   2. Connect: scan the xpub QR shown on the SeedSigner.
-  3. Scan: shows the XBT and coin count found. If none: "No XBT found for this
-     wallet," with the usual reasons (different wallet type, missing
-     passphrase, coins received after the split), then stop.
-  4. Destination: the user's Wren wallet (fresh address) by default. "Send
-     elsewhere" accepts any XBT address by scan or paste, shown in full, with
-     the clipboard flag.
+  3. Scan: shows the XBT and coin count found, and any coins that can't be
+     claimed, with the reason. If none: "**This server found no XBT for this
+     account.**" It then lists the reasons it may have missed coins: a different
+     wallet type or account, a missing passphrase, coins past the first
+     addresses ("Search further"), coins received after the split, coins not yet
+     confirmed. Then: "This doesn't prove the wallet has none." Then stop.
+  4. Destination: the user's Wren wallet by default, with a fresh address for
+     each claim transaction. "Send elsewhere" accepts any XBT address by scan or
+     paste, shown in full, with the clipboard flag.
   5. Fee: slow, normal, fast, or custom.
-  6. Review: sweep of all found coins, no change, the Replay-safe badge, and
-     "This moves XBT only. Your BTC stays where it is."
-  7. Sign: Wren shows an animated QR; the SeedSigner scans it, shows the details
-     on its own screen, and signs; Wren scans the signed QR back.
-  8. Verify and broadcast (§4.1).
-  9. Success: "**Your coins are now split.** Your BTC and XBT are fully separate.
-     Spending one can never move the other." The xpub is wiped.
+  6. Review: sweep of all claimable coins, no change, the Replay-safe badge, and
+     "This moves XBT only. Your BTC stays where it is." It also says: "These
+     coins are spent together, which shows they belong to one wallet, on both
+     chains."
+  7. Sign. First, a "**Before you sign**" card: "On your SeedSigner, look for the
+     line **Unified sighash (0x21)**. If it says **Standard sighash**, don't
+     sign. Press back. Your signer needs the fork firmware. See the guide." Then
+     Wren shows an animated QR; the SeedSigner scans it, shows the details on its
+     own screen, and signs; Wren scans the signed QR back.
+  8. Verify and broadcast (§4.1). If a signature is unsafe, Wren shows the
+     "Stop" screen:
+     **Stop. This signature isn't safe.** Your signer made a normal bitcoin
+     signature. Wren did not send it. But the signature still exists, on your
+     signer's screen and in the QR code. Anyone who copied it could use it to
+     move these coins to {destination}, on the BTC chain and on the XBT chain.
+     To make it useless: (1) update your SeedSigner to the fork firmware (see
+     the guide); (2) sign this claim again and finish it, which moves your XBT;
+     (3) then move your BTC to a new address with the wallet you normally use
+     for BTC. Until you've done step 3, keep your signer and this phone with
+     you. [Open the guide] [Sign again]
+  9. Success: "**Done. The {N} coins listed are now split: their BTC and XBT are
+     separate.**" Then any coins not claimed, each with its reason (not yet
+     confirmed, worth less than the fee, too large for QR, couldn't be proven).
+     Then: "**Claim before you spend BTC from this wallet.** Coins this scan
+     didn't find are not split, and spending their BTC could also move their
+     XBT." The xpub is wiped.
 - **SeedSigner guide:** a plain-language guide, in the app and on the website:
   what to buy, how to flash and verify the pinned fork firmware, and how to
   claim.
 - **Activity detail:**
-  - Confirmation count and transaction ID.
+  - Confirmation count and transaction ID. Incoming unconfirmed items carry an
+    "Unconfirmed — not spendable yet" tag.
   - An optional "Open in explorer" link, with a warning that the explorer will
     see the transaction.
 - **Settings:**
   - Server: the default project server, or a custom one (host, port, SSL/onion).
-    Tor is on by default and can be turned off.
+    Unencrypted servers only as onion addresses. For a custom SSL server with a
+    self-signed certificate, Wren shows the certificate's SHA-256 fingerprint
+    (colon-separated hex, as `openssl` shows it) for the user to compare with
+    their node; if the server's key later changes, Wren stops and asks before
+    trusting the new one. Tor is on by default; turning it off asks for
+    confirmation and never happens automatically.
   - View recovery phrase, which always requires the Wren PIN.
   - Units: XBT or sats.
-  - App lock: change the Wren PIN, and turn Face ID/fingerprint on or off. Both
-    require the current PIN.
+  - App lock: change the Wren PIN or switch to a longer PIN, and turn Face
+    ID/fingerprint on or off. All require the current PIN.
   - "About replay protection," a plain-language explainer.
 
 ### Out of scope for v1
@@ -426,32 +551,58 @@ controls the user's BTC, so the rules are strict:
 - **Local test chain:** fork Knots in regtest plus Fulcrum on a developer machine. The
   full lifecycle runs there: create, receive, send, send all, speed up, and
   confirm.
-- **Replay proof, run on every build:** every transaction the engine signs, and
-  every claim transaction it would broadcast, is submitted to a stock main-chain
-  Knots regtest node and **must be rejected**.
-- **Claim tests, run on every build:**
-  - **Signer compatibility:** a claim built by the engine and signed by the
-    SeedSigner fork firmware (run in the SeedSigner desktop emulator) is
-    byte-identical to the same claim signed by Shrike.
-  - **Refusals:** the engine must refuse to broadcast when a signature is a
-    normal (non-UNIFIED) type, an output was changed after review, an input was
-    added or removed, or the fee was altered.
+- **Replay proof, on every build (required CI check):** every transaction the
+  engine signs that spends a pre-split coin, including all four claim types, is
+  mined on a Bitcoin Core regtest node that shares the pre-split history, and
+  **must be rejected by consensus** with the expected script error. As a
+  control, the same transaction signed normally must be accepted there.
+- **Claim tests, on every build (required CI check):**
+  - **Signer compatibility:** real SeedSigner fork-firmware exports and signed
+    PSBTs (captured from a device) are imported and verified, and the firmware's
+    own PSBT parser and signer, run without its screen, sign each claim type in
+    the local test chain. The full device or emulator run happens at Gate B and
+    before release.
+  - **Refusals:** the engine must refuse to broadcast when a signature is unsafe
+    (normal, or BTC-valid), an output was changed after review, an input was
+    added or removed, or the fee was altered. Unsafe signatures made by real
+    software that doesn't know the fork (Bitcoin Core) must be refused for every
+    claim type.
   - **QR round trip:** large animated BC-UR PSBTs survive encode, scan, and
-    decode intact.
+    decode intact. QR codes claiming absurd sizes, or that never complete, are
+    refused.
   - **Wipe:** after finish, cancel, or a force-quit mid-claim, no trace of the
     xpub remains in app storage.
   - **Supported types:** every script type Claim accepts is signed and verified
     end to end; every other type is refused before scanning.
+- **Mainnet data rules in the test chain:** the local test chain turns on the
+  fork's data limits and long coinbase maturity, so tests run under mainnet
+  rules.
 - **Wrong-chain proof:** pointing the engine at a main-chain Electrum server (for
   example a stock electrs) must fail to connect, and sending must stay
   impossible.
+- **Header-chain tests:** weaker, equal-work and invalid competing branches are
+  refused and the stored chain is unchanged; a server below activation is
+  refused; a fabricated pre-split confirmation is never counted.
+- **Server-trust tests:** an invented unconfirmed spend of a wallet coin is
+  refused; *Speed up* refuses any transaction the wallet key did not sign; fake
+  incoming payments are never spendable; absurd server fees fall back to the
+  minimum; a lost broadcast reply never leads to paying twice.
+- **BTC-seed check:** a restored phrase with pre-split history is never saved;
+  history found later allows only one send-all.
+- **No secrets on disk:** no seed or key bytes are ever written to Wren's files.
 - **App lock tests:**
   - Wrong-PIN waits survive an app restart and a force-quit.
   - Biometrics can never view the recovery phrase or change the PIN.
   - Enrolling a new face or fingerprint turns the shortcut off.
-  - After delete and reinstall, no seed or PIN counter remains.
-  - Copied app storage cannot be unlocked off the phone.
-  - Obvious PINs are refused.
+  - A wallet from an earlier install is never deleted without the typed
+    confirmation.
+  - The saved seed copied to another phone cannot be unlocked with the right PIN.
+  - Obvious PINs are refused, at every PIN length.
+  - A wrong PIN still counts if the app is closed during the check.
+  - Changing the phone's date or time does not shorten a wait.
+  - The app's JavaScript cannot send, view the recovery phrase, or change the
+    PIN without the native PIN pad or biometrics.
+  - Wren locks on leaving the app and after 5 minutes idle.
 - **App tests:** unit tests for screen logic, plus Maestro end-to-end flows on
   the iOS simulator and Android emulator covering onboarding, the backup check,
   receive, send, and settings.
@@ -460,8 +611,10 @@ controls the user's BTC, so the rules are strict:
 - **Real-chain trial:** a small round trip between Wren Wallet and Shrike on the
   live fork chain, verified on a developer-run fork node.
 - **Claim trials:**
-  - A SeedSigner (privkeyio unified-sighash firmware) claims from a test wallet
-    on the local test chain, running the full flow on a real phone.
+  - At Gate B: a SeedSigner (privkeyio unified-sighash firmware, real device or
+    emulator) claims from a test wallet on the local test chain, running the
+    full flow on a real phone. Its exports and signed PSBTs become the test
+    fixtures.
   - One real claim on the live fork chain, from a genuine pre-split wallet,
     before any public release.
   - **Guide test:** a non-developer follows the SeedSigner guide cold. Wherever a
@@ -494,11 +647,13 @@ controls the user's BTC, so the rules are strict:
 | Signing bug loses funds | Byte-exact cross-signing with Shrike and Knots; replay proof on every build; external review; small real-chain trial first. |
 | Fork rules change (soft forks, hotfixes) | Pinned engine patch set; fork-watch monitoring; server upgrade runbook in `infra/`. |
 | BDK/rust-bitcoin upstream drift | Pin exact versions; keep the fork patch set small and documented; rebase deliberately. |
-| Arti onion-client maturity | SSL direct mode as a fallback; Tor status visible on Home. |
+| Arti onion-client maturity | SSL direct mode as a fallback the user chooses (never automatic). Tor start-up gives up after 2 minutes with a clear message. The actual route is shown on Home. |
 | App Store rejection | Organization account; no swaps or fiat; clear non-custodial description. |
 | Thin XBT market confuses newcomers | No USD display; self-custody cards in onboarding. |
 | Claim depends on one community firmware developer (privkeyio's SeedSigner unified-sighash build) | Pin a verified firmware version; the guide shows how to verify its signature; add other signers if their makers support SIGHASH_UNIFIED. |
 | User forgets the Wren PIN | No reset, by design. Restore from the 12 words; onboarding says so at PIN setup. Sending is locked until the backup check passes, so anyone who can send has confirmed their words. |
-| A 6-digit PIN has only 1,000,000 combinations | The hardware-bound key means guesses can only run on the phone itself; growing waits after 5 wrong tries; Argon2id settings and the wait schedule reviewed at Gate B and in the external review. |
+| A 6-digit PIN has only 1,000,000 combinations | Each guess needs this phone's security chip, so a copy of Wren's storage or a backup is useless elsewhere. Someone holding the locked phone gets 5 tries, then waits up to 24 hours per try. But someone who can run their own code inside Wren on that phone (a jailbroken or rooted phone, or a tampered app) skips the waits and could try every 6-digit PIN in about a week. Users can choose a longer PIN (8 to 12 digits, or with letters), which raises this to years. Argon2id cost and the wait schedule are reviewed at Gate B and in the external review. |
 | Fake Wren apps ask users for their seeds | Official links only; open source; "Wren never asks for your seed" in the app and on the website; claiming is hardware-signer only, so a real Wren never asks. |
-| Claim scan reveals old BTC addresses to the fork server | Only during an actual claim; over Tor; xpub never leaves the phone; stated in the privacy policy. |
+| Claim scan reveals old BTC addresses to the fork server | Only during an actual claim; Tor required, on a separate session the server can't link to the Wren wallet; xpub never leaves the phone; stated in the privacy policy. |
+| One server shows a privately mined branch with fake confirmations | Full header verification, minimum total work and most-work selection limit what it can fake; stale-tip warning; Nest asks for 6 confirmations (Nest plan). A second-server cross-check is deferred past v1. |
+| A signer makes a normal (BTC-valid) claim signature | Pre-sign check on the SeedSigner screen; Wren refuses and wipes it, and tells the user to finish the claim and then move their BTC. |

@@ -26,13 +26,19 @@ where waiting for several confirmations is awkward.
   online-to-receive, and watchtower work.
 - XBT is a minority chain where reorgs are cheap, which adds risk to channel
   closes.
-- **Open question:** XBT and BTC share a genesis hash. Do XBT Lightning
-  invoices differ from BTC ones (BOLT11 prefix, chain hash)? If not, a user
-  could pay an invoice from the wrong wallet. This is the same wrong-chain
-  problem the `xbt:` scheme solves on-chain. Ask the fork's Lightning developers.
+- **Wrong-chain invoices (answered in the Gate A review):** XBT and BTC
+  Lightning share the genesis hash (the chain hash in BOLT12 and gossip) and the
+  address prefixes, so BOLT11 invoices on both start `lnbc`. The prefix and chain
+  hash can't tell the chains apart, and an invoice's `f` fallback address is
+  valid on both chains. If Wren adds Lightning, it must require the fork's even
+  BLAKE2b feature bit (512) in the invoice's own features, refuse invoices
+  without it, and ignore `f` fallbacks.
+- **Still open:** whether the fork's Lightning software sets bit 512 in
+  invoices, or only in node and connection features. Ask the fork's Lightning
+  developers.
 
 **Revisit when:** there is more than one LSP, the fork's Lightning software has
-a track record, and the invoice question is answered.
+a track record, and invoices are confirmed to carry the BLAKE2b feature bit.
 
 ## x402 payments (looked at 2026-09-29)
 
