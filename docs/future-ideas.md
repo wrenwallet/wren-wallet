@@ -40,6 +40,14 @@ where waiting for several confirmations is awkward.
 **Revisit when:** there is more than one LSP, the fork's Lightning software has
 a track record, and invoices are confirmed to carry the BLAKE2b feature bit.
 
+**Update 2026-10-09:** invoices and BOLT 12 offers carry compulsory bit 512
+since privkeyio CLN `.5` (2026-09-28). A phased path is proposed for review in
+[`superpowers/research/2026-10-09-xbt-lightning.md`](superpowers/research/2026-10-09-xbt-lightning.md):
+Phase 0 spec rules (v1 recognizes Lightning strings and explains they are not
+supported), Phase 1 connect-your-own-node (REST over Tor, NWC) with one-tap
+Wren Nest payments, Phase 2 embedded LDK using a third-party LSPS2 provider.
+Wren itself runs no Lightning infrastructure in any phase.
+
 ## x402 payments (looked at 2026-09-29)
 
 **What:** an open standard, started by Coinbase and now run by the x402
