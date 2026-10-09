@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Wren Wallet — self-custody for XBT</title>
+  <meta name="description" content="Wren Wallet is a self-custody mobile wallet for XBT, in design. Open source. Your keys stay on your phone.">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#571521">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/fraunces-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="top">
+    <a class="brand" href="./" aria-label="Wren Wallet home">
+      <span class="brand-coin" aria-hidden="true"><img src="wren.svg" alt=""></span>
+      <span>Wren Wallet<sup>™</sup></span>
+    </a>
+    <a class="top-link" href="https://github.com/wrenwallet">Source code</a>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-text">
+        <p class="status"><span class="dot" aria-hidden="true"></span>In design · no app yet</p>
+        <h1 id="hero-title">Your XBT.<br>Your keys.<br><em>Your phone.</em></h1>
+        <p class="lede">
+          Wren is a simple, self-custody wallet for XBT, the coin of the
+          BLAKE2b fork chain. It is being built in the open for iPhone and
+          Android.
+        </p>
+      </div>
+      <div class="emblem" aria-hidden="true">
+        <div class="emblem-glow"></div>
+        <div class="emblem-coin"><img src="wren.svg" alt=""></div>
+        <div class="emblem-shine"></div>
+      </div>
+    </section>
+
+    <aside class="warning" aria-labelledby="warn-title">
+      <h2 id="warn-title">Stay safe</h2>
+      <p>
+        <strong>There is no Wren app to download yet.</strong> Any app,
+        download, or person claiming to be Wren Wallet today is not us.
+      </p>
+      <p>
+        <strong>Wren will never ask for your recovery phrase</strong>, by
+        message, by email, or on any website.
+      </p>
+    </aside>
+
+    <section class="features" aria-labelledby="features-title">
+      <h2 id="features-title">What Wren is being built to do</h2>
+      <div class="cards">
+        <article class="card">
+          <h3>Keys stay on your phone</h3>
+          <p>No accounts, no sign-up, no KYC. Wren collects no data about you.
+          Back up with 12 words on paper.</p>
+        </article>
+        <article class="card">
+          <h3>Claim your XBT safely</h3>
+          <p>Held BTC before the split at block 961,632? You may also hold XBT.
+          Wren moves it with a hardware signer, so your BTC seed never touches
+          a phone.</p>
+        </article>
+        <article class="card">
+          <h3>Always the right chain</h3>
+          <p>Every signature is invalid on the BTC chain by design. Wren uses
+          its own <code>xbt:</code> payment links and refuses BTC servers.</p>
+        </article>
+        <article class="card">
+          <h3>Private by default</h3>
+          <p>Tor is built in and on from the start. Use the project server or
+          connect your own node.</p>
+        </article>
+      </div>
+      <p class="note">XBT is not BTC. They are separate coins on separate chains.</p>
+    </section>
+
+    <section class="open" aria-labelledby="open-title">
+      <h2 id="open-title">Built in the open</h2>
+      <p>
+        Every line of Wren is public, so anyone can check the code that holds
+        their money. Outside bitcoin developers review the plan before code is
+        written, again when signing works, and a formal security review comes
+        before any release.
+      </p>
+      <p class="buttons">
+        <a class="button" href="https://github.com/wrenwallet">Read the code on GitHub</a>
+        <a class="button ghost" href="https://github.com/wrenwallet/wren-wallet/blob/main/SECURITY.md">Report a security problem</a>
+      </p>
+    </section>
+  </main>
+
+  <footer class="legal">
+    <h2>The fine print</h2>
+    <p><strong>Non-custodial software.</strong> Wren Wallet never holds your
+    coins or your keys and cannot recover them for you. It is provided as is,
+    without warranty, under the MIT license. Nothing here is financial advice.</p>
+    <p><strong>Privacy.</strong> This website uses no cookies, no analytics, and
+    no trackers, and loads nothing from any other server.</p>
+    <p><strong>Trademarks.</strong> Wren Wallet™, Wren Nest™, and the Wren logo
+    are trademarks of the Wren Wallet project. The code is MIT-licensed; the
+    names and logo are not.</p>
+    <p class="copy">© 2026 The Wren Wallet developers · Official links only:
+    wrenwallet.app and github.com/wrenwallet</p>
+  </footer>
+</body>
+</html>

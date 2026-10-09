@@ -1,0 +1,4 @@
+.DS_Store
+# Local-only assistant guard files (never published)
+CLAUDE.local.md
+.claude/settings.local.json
