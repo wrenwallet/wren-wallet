@@ -1,5 +1,7 @@
 # Wren Engine (Rust core) Implementation Plan
 
+> **Gate A amendments (2026-10-08) are binding.** After the Gate A review, this plan is amended by [`2026-10-08-wren-engine-gate-a-amendments.md`](2026-10-08-wren-engine-gate-a-amendments.md). Read its product decisions, global sections and cross-area reconciliation first; each affected task below links to its amendment section. **Where the amendments and this plan differ, the amendments win.** New tasks: 12a (custody) and 22a (SeedSigner fixtures). Review record: [`../reviews/2026-10-08-gate-a.md`](../reviews/2026-10-08-gate-a.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build `wren-engine`, the Rust library that holds every key- and money-touching part of Wren Wallet: BLAKE2b fork header verification, SIGHASH_UNIFIED signing, an Electrum client, a BDK-backed wallet, payments, and the hardware-signer Claim flow. It is proven on a local fork regtest chain before any phone code exists.
@@ -8,7 +10,7 @@
 
 **Tech Stack:** Rust (pinned toolchain), `bdk_wallet` 3.2 (features `rusqlite`, `keys-bip39`) and its re-exported `bitcoin` 0.32 / `secp256k1`, `blake2` 0.10, `tokio`, `tokio-rustls`/`rustls`/`webpki-roots`, `serde_json`, `thiserror`, `zeroize`, `ur` 0.5 (BC-UR fountain codes), `ciborium` (CBOR), `hex`, `base64`. Integration: Docker (colima) running fork Knots `v29.4.2.knots20260508`, privkeyio Fulcrum `v2.1.2-blake-3`, and Bitcoin Core 29 as the independent legacy-chain node; Knots `walletprocesspsbt` is the automated stand-in for the SeedSigner signer (the real device is tested in sub-plan 2).
 
-**Spec:** `docs/superpowers/specs/2026-09-24-wren-wallet-design.md` (commit `cec2608`).
+**Spec:** `docs/superpowers/specs/2026-09-24-wren-wallet-design.md` (as amended for Gate A).
 **Research (facts this plan relies on, with sources):** `docs/superpowers/research/2026-09-28-fork-consensus-facts.md`, `docs/superpowers/research/2026-09-28-fork-wallet-tooling.md`.
 
 This is **sub-plan 1 of 3** for Wren Wallet v1:
@@ -102,6 +104,8 @@ WrenWallet/
 ---
 
 ### Task 1: Repository guardrails, Rust workspace, and test vectors
+
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 1](2026-10-08-wren-engine-gate-a-amendments.md#task-1). The amendments win where they differ.
 
 **Files:**
 - Create: `CLAUDE.md`
@@ -816,6 +820,8 @@ git commit -m "feat(engine): fork block hash (SHA256d v1, BLAKE2b v2) matching K
 
 ### Task 5: Proof of work and difficulty
 
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 5](2026-10-08-wren-engine-gate-a-amendments.md#task-5). The amendments win where they differ.
+
 **Files:**
 - Create: `core/wren-engine/src/pow.rs`
 - Modify: `core/wren-engine/src/lib.rs` (add `pub mod pow;`)
@@ -1127,6 +1133,8 @@ git commit -m "feat(engine): compact targets, PoW check, retarget and BLAKE2b sh
 ---
 
 ### Task 6: Chain params and the verified header chain (includes the wrong-chain guard)
+
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 6](2026-10-08-wren-engine-gate-a-amendments.md#task-6). The amendments win where they differ.
 
 **Files:**
 - Create: `core/wren-engine/src/params.rs`, `core/wren-engine/src/headerchain.rs`
@@ -1649,6 +1657,8 @@ git commit -m "feat(engine): verified header chain from pinned anchor with wrong
 
 ### Task 7: The SIGHASH_UNIFIED digest
 
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 7](2026-10-08-wren-engine-gate-a-amendments.md#task-7). The amendments win where they differ.
+
 **Files:**
 - Create: `core/wren-engine/src/sighash.rs`
 - Modify: `core/wren-engine/src/lib.rs` (add `pub mod sighash;`)
@@ -2065,6 +2075,8 @@ git commit -m "feat(engine): P2WPKH UNIFIED signing (low-R) and UNIFIED signatur
 ---
 
 ### Task 9: Electrum JSON-RPC client
+
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 9](2026-10-08-wren-engine-gate-a-amendments.md#task-9). The amendments win where they differ.
 
 **Files:**
 - Create: `core/wren-engine/src/electrum/mod.rs`, `core/wren-engine/src/electrum/rpc.rs`, `core/wren-engine/src/electrum/mock.rs` (`#[cfg(test)]`)
@@ -2553,6 +2565,8 @@ git commit -m "feat(engine): Electrum JSON-RPC client with raw 80/164-byte heade
 
 ### Task 10: Transports — TCP, TLS with web PKI, TLS with a pinned self-signed certificate
 
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 10](2026-10-08-wren-engine-gate-a-amendments.md#task-10). The amendments win where they differ.
+
 **Files:**
 - Create: `core/wren-engine/src/electrum/transport.rs`
 - Modify: `core/wren-engine/src/electrum/mod.rs` (add `pub mod transport;`), `core/wren-engine/Cargo.toml` (dev-dependency `rcgen`)
@@ -2798,6 +2812,8 @@ git commit -m "feat(engine): TCP and TLS transports with web PKI or pinned self-
 ---
 
 ### Task 11: Header sync (with reorg handling) and test chain utilities
+
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 11](2026-10-08-wren-engine-gate-a-amendments.md#task-11). The amendments win where they differ.
 
 **Files:**
 - Create: `core/wren-engine/src/sync.rs` (header part), `core/wren-engine/src/testutil.rs` (`#[cfg(test)]`)
@@ -3154,6 +3170,8 @@ git commit -m "feat(engine): header sync with reorg window, persistence, synthet
 
 ### Task 12: Wallet core (create, restore, open, addresses, balance, history)
 
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 12](2026-10-08-wren-engine-gate-a-amendments.md#task-12). The amendments win where they differ. **Task 12a (custody) comes first:** see the amendments' Task 12a section.
+
 **Files:**
 - Create: `core/wren-engine/src/wallet.rs`
 - Modify: `core/wren-engine/src/lib.rs` (add `pub mod wallet;`)
@@ -3408,6 +3426,8 @@ git commit -m "feat(engine): wallet core over public BIP84 descriptors with in-m
 
 ### Task 13: Script sync — Electrum history into a verified BDK update
 
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 13](2026-10-08-wren-engine-gate-a-amendments.md#task-13). The amendments win where they differ.
+
 **Files:**
 - Modify: `core/wren-engine/src/sync.rs` (add wallet sync)
 - Test: inline tests in `sync.rs`
@@ -3653,6 +3673,8 @@ git commit -m "feat(engine): gap-limit script sync with txid and merkle verifica
 ---
 
 ### Task 14: Payments — fee estimates, build and review, sign and broadcast, speed up
+
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 14](2026-10-08-wren-engine-gate-a-amendments.md#task-14). The amendments win where they differ.
 
 **Files:**
 - Create: `core/wren-engine/src/payment.rs`
@@ -4027,6 +4049,8 @@ git commit -m "feat(engine): payments with 0x21 on every input, RBF, send-all, l
 
 ### Task 15: `xbt:` payment links
 
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 15](2026-10-08-wren-engine-gate-a-amendments.md#task-15). The amendments win where they differ.
+
 **Files:**
 - Create: `core/wren-engine/src/uri.rs`
 - Modify: `core/wren-engine/src/lib.rs` (add `pub mod uri;`)
@@ -4194,6 +4218,8 @@ git commit -m "feat(engine): xbt: payment links; refuse bitcoin: links"
 ---
 
 ### Task 16: Animated QR (BC-UR) and claim xpub import
+
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 16](2026-10-08-wren-engine-gate-a-amendments.md#task-16). The amendments win where they differ.
 
 **Files:**
 - Create: `core/wren-engine/src/ur.rs`, `core/wren-engine/src/xpub_import.rs`
@@ -4631,6 +4657,8 @@ git commit -m "feat(engine): BC-UR animated PSBT frames and claim xpub import (U
 
 ### Task 17: Claim session and scan
 
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 17](2026-10-08-wren-engine-gate-a-amendments.md#task-17). The amendments win where they differ.
+
 **Files:**
 - Create: `core/wren-engine/src/claim/mod.rs`, `core/wren-engine/src/claim/scan.rs`
 - Modify: `core/wren-engine/src/lib.rs` (add `pub mod claim;`)
@@ -4875,6 +4903,8 @@ git commit -m "feat(engine): claim session with in-memory watch-only scan and se
 ---
 
 ### Task 18: Claim build — sweep PSBTs marked 0x21 on every input
+
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 18](2026-10-08-wren-engine-gate-a-amendments.md#task-18). The amendments win where they differ.
 
 **Files:**
 - Replace: `core/wren-engine/src/claim/build.rs`
@@ -5172,6 +5202,8 @@ git commit -m "feat(engine): claim sweep PSBTs (0x21 inputs, no change, 65-byte 
 ---
 
 ### Task 19: Read the signer's PSBT, run the five checks, finalize, broadcast
+
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 19](2026-10-08-wren-engine-gate-a-amendments.md#task-19). The amendments win where they differ.
 
 **Files:**
 - Replace: `core/wren-engine/src/claim/psbt_sigs.rs`, `core/wren-engine/src/claim/verify.rs`
@@ -5640,6 +5672,8 @@ git commit -m "feat(engine): verify signer PSBTs (0x21 only, byte-identical tx),
 ---
 
 ### Task 20: `WrenEngine` — the public API
+
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 20](2026-10-08-wren-engine-gate-a-amendments.md#task-20). The amendments win where they differ.
 
 **Files:**
 - Create: `core/wren-engine/src/engine.rs`
@@ -6135,6 +6169,8 @@ git commit -m "feat(engine): WrenEngine public API with verified-server and clai
 
 ### Task 21: Tor transport (embedded Arti)
 
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 21](2026-10-08-wren-engine-gate-a-amendments.md#task-21). The amendments win where they differ.
+
 **Files:**
 - Create: `core/wren-engine/src/electrum/tor.rs`
 - Modify: `core/wren-engine/Cargo.toml` (optional deps + `tor` feature), `core/wren-engine/src/electrum/transport.rs` (`connect_via`), `core/wren-engine/src/engine.rs` (Tor-aware `connect`), `core/scripts/check.sh` (clippy with `--features tor`)
@@ -6336,6 +6372,8 @@ git commit -m "feat(engine): embedded Arti Tor transport (feature tor)"
 ---
 
 ### Task 22: Local test chain — full lifecycle, cross-signing, replay proof, wrong-chain proof
+
+> **Amended at Gate A** — see [2026-10-08-wren-engine-gate-a-amendments.md § Task 22](2026-10-08-wren-engine-gate-a-amendments.md#task-22). The amendments win where they differ. **Task 22a (SeedSigner fixtures) follows this task:** see the amendments' Task 22a section.
 
 **Files:**
 - Create: `core/integration/docker-compose.yml`, `core/integration/knots/Dockerfile`, `core/integration/core/Dockerfile`, `core/integration/fulcrum/Dockerfile`, `core/integration/run.sh`
