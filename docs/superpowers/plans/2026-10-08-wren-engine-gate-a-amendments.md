@@ -31,7 +31,7 @@
 - TLS pin = SPKI SHA-256; CertificateChanged error; re-pin only with explicit user consent; no Start9 root-CA pinning in v1.
 - Tor bootstrap deadline 120 s; any direct (non-Tor) fallback is user-initiated only.
 - Electrum history cap 20,000 items per script; exceeding it is an error, never a truncation.
-- Native PIN pad and native send-confirm sheet (Swift/Kotlin). Seed words cross JS only at Create, Restore, Reveal. Engine locks on app background and after 5 min idle.
+- Native PIN pad and native send-confirm sheet (Swift/Kotlin). Seed words cross JS only at Create, Restore, Reveal, and three of them typed back at the backup check. Engine locks on app background and after 5 min idle.
 - Argon2id ~1 s per guess on slowest supported phone; keep the existing wait schedule incl. 24 h tail.
 - Wallet from an earlier install: offer unlock with its PIN or explicit typed-confirmation delete; never silent wipe.
 - No extra BIP44/49/86 probing on restore (privacy).
@@ -42,7 +42,450 @@
 - UR import with any unsupported output: refuse the whole import, naming the type.
 - CI: `check` and `integration` are required checks; arm64 runners; actions pinned by SHA.
 - Core 29.1 used as the standard signer / legacy-chain oracle: recorded as a deviation in Task 22.
-- Pinned constants that need the owner's fork node (header-merkle root at 961,631, chainwork at 961,632, times 961,622-961,631, real retarget tuples): plan carries placeholders + exact capture procedure; they must be filled and cross-checked against a BTC Electrum server before Task 6 is implemented.
+- Pinned constants that need the owner's fork node (header-merkle root at 961,631, chainwork at 961,632, times 961,622-961,631, real retarget tuples): plan carries placeholders + exact capture procedure; they must be filled and cross-checked against a BTC Electrum server before Task 5 starts.
+
+## Cross-area reconciliation (binding; overrides the area blocks below where they differ)
+
+The five areas were drafted in parallel. A consistency pass then resolved every clash between them. This section is the final word on shared types and signatures; the numbered resolutions after it explain each change.
+
+### `EngineError` (error.rs; Task 1 declares all but the last seven, Task 12a appends those)
+```rust
+/// Variants never carry server-supplied text, and their messages contain no keys, addresses, amounts or txids.
+#[derive(Debug, Error)]
+pub enum EngineError {
+    #[error("invalid block header: {0}")] Header(&'static str),
+    #[error("header chain rejected: {0}")] Chain(&'static str),
+    #[error("server is not on the XBT (BLAKE2b) chain")] WrongChain,
+    #[error("signing refused: {0}")] Signing(&'static str),
+    #[error("server error: {0}")] Server(ServerError),
+    #[error("network error: {0}")] Network(&'static str),
+    #[error("wallet error: {0}")] Wallet(&'static str),
+    #[error("not enough XBT for this payment and its fee")] InsufficientFunds { available: Amount, needed: Amount },
+    #[error("invalid input: {0}")] Input(&'static str),
+    #[error("claim refused: {0}")] Claim(&'static str),
+    #[error("not connected to a verified XBT server")] NotVerified,
+    #[error("the operation was cancelled")] Cancelled,
+    #[error("the server's certificate key changed")] CertificateChanged { spki_sha256: [u8; 32], cert_sha256: [u8; 32] },
+    #[error("the signer made a normal signature; nothing was sent")] DangerousSignature,
+    // Task 12a:
+    #[error("Wren is locked")] Locked,
+    #[error("wrong Wren PIN")] WrongPin,
+    #[error("authorization was cancelled")] AuthCancelled,
+    #[error("too many wrong PINs; try again later")] LockedOut { retry_after_secs: u64 },
+    #[error("confirm your recovery phrase before sending")] BackupNotConfirmed,
+    #[error("this recovery phrase was used for bitcoin before the split")] SeedHoldsBtc,
+    #[error("secure storage is not available")] KeyVault,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ServerError {
+    #[error("the server sent data Wren could not read")] Malformed,
+    #[error("the server sent too much data")] TooLarge,            // reply/batch/unsolicited budgets
+    #[error("the server is behind the chain")] Behind,
+    #[error("the server returned no headers")] NoHeaders,
+    #[error("the server sent an invalid transaction")] InvalidTransaction,
+    #[error("the server speaks an unsupported Electrum version")] UnsupportedProtocol,
+    #[error("an address has more history than Wren can load")] HistoryTooLarge,
+    #[error("{0}")] Rejected(RejectKind),                           // JSON-RPC error reply; never poisons
+}
+// RejectKind: unchanged from Task 1 Area B.
+```
+Constructor rules:
+- `electrum::bad() -> Server(Malformed)`.
+- `net(_) -> Network("could not reach the server")`.
+- Deadline → `Network("the server did not answer in time")`.
+- Poisoned → `Network("connection lost")`.
+- No `.into()`, `format!` or `to_string()` in any `EngineError` constructor.
+
+### Task 20 public API (engine.rs)
+```rust
+pub struct EngineConfig { pub data_dir: PathBuf, pub params: ChainParams, pub server: ServerAddress, pub tor: bool /* initial value only */ }
+#[derive(Clone, Debug, Default)]
+pub struct ConnectionStatus { pub connected: bool, pub verified: bool, pub tip_height: Option<u32>, pub tip_time: Option<u64>,
+    pub stale_tip: bool, pub protocol: Option<String>, pub route: Option<Route>, pub tor_progress: Option<u8> }
+pub const STALE_TIP_SECS: u64 = 2 * 60 * 60;
+pub const IDLE_LOCK: Duration = Duration::from_secs(300);
+pub const CLAIM_NEEDS_TOR: &str = "Claim needs Tor. Turn on Tor in Settings.";
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum WalletPresence { None, Ready, SealedSeedOnly }
+#[derive(Clone, Debug)] pub struct RestoreCheck { pub tx_count: usize }
+#[derive(Clone, Debug, Default)] pub struct WalletFlags { pub backup_confirmed: bool, pub btc_history_detected: bool, pub btc_sweep_available: bool }
+#[derive(Clone, Debug)] pub struct ClaimReviewTx { pub destination: String, pub inputs: usize, pub amount: Amount, pub fee: Amount, pub qr_frames: Vec<String> }
+#[derive(Clone, Debug)] pub struct ClaimReview { pub claim_id: u64, pub total_in: Amount, pub total_fee: Amount, pub total_out: Amount,
+    pub transactions: Vec<ClaimReviewTx>, pub not_claimed: Vec<NotClaimed>, pub abnormal_fee: bool }
+
+impl WrenEngine {
+    pub fn new(cfg: EngineConfig) -> Result<Self, EngineError>;              // installed vault else KeyVault; RoutePolicy(cfg.server, cfg.tor); corrupt headers.bin -> headers.bin.corrupt
+    #[cfg(any(test, feature = "test-hooks"))] pub fn with_vault(cfg: EngineConfig, vault: Arc<dyn KeyVault>) -> Result<Self, EngineError>;
+    // setup and custody
+    pub async fn wallet_presence(&self) -> Result<WalletPresence, EngineError>;
+    pub async fn create_wallet(&self) -> Result<Vec<String>, EngineError>;
+    pub async fn restore_wallet(&self, words: String, passphrase: String) -> Result<(), EngineError>;
+    pub async fn restore_check(&self) -> Result<RestoreCheck, EngineError>;        // cancellable(abort_net)
+    pub async fn finish_setup(&self) -> Result<(), EngineError>;
+    pub async fn abandon_setup(&self);
+    pub async fn backup_challenge(&self) -> Result<[u8; 3], EngineError>;
+    pub async fn confirm_backup(&self, answers: Vec<String>) -> Result<bool, EngineError>;
+    pub async fn unlock(&self) -> Result<(), EngineError>;
+    pub async fn lock(&self);                                                       // bumps abort_claim + abort_net first
+    pub async fn is_unlocked(&self) -> bool;
+    pub async fn reveal_words(&self) -> Result<Vec<String>, EngineError>;
+    pub async fn change_pin(&self) -> Result<(), EngineError>;
+    pub async fn wallet_flags(&self) -> Result<WalletFlags, EngineError>;
+    pub async fn acknowledge_btc_seed(&self) -> Result<(), EngineError>;
+    // network
+    pub async fn set_server(&self, server: ServerAddress) -> Result<(), EngineError>;
+    pub async fn set_tor(&self, on: bool) -> Result<(), EngineError>;
+    pub async fn disconnect(&self);
+    pub async fn connect(&self) -> Result<ConnectionStatus, EngineError>;          // cancellable(abort_net)
+    pub async fn sync(&self) -> Result<(), EngineError>;                           // cancellable(abort_net); wallet only when unlocked
+    pub async fn connection_status(&self) -> ConnectionStatus;                     // reads `status` snapshot only
+    pub async fn probe_certificate(&self, host: &str, port: u16) -> Result<CertInfo, EngineError>;
+    pub async fn fee_estimates(&self) -> Result<FeeEstimates, EngineError>;        // cancellable(abort_net)
+    // wallet
+    pub async fn balance(&self) -> Result<WrenBalance, EngineError>;
+    pub async fn transactions(&self) -> Result<Vec<TxSummary>, EngineError>;
+    pub async fn next_receive_address(&self) -> Result<String, EngineError>;
+    pub async fn build_payment(&self, destination: &str, amount: Option<Amount>, send_all: bool, fee_rate: FeeRate) -> Result<ReviewSummary, EngineError>;
+    pub async fn sign_and_broadcast(&self, review_id: u64) -> Result<BroadcastOutcome, EngineError>; // vault-authorized; not cancellable; broadcast outside the state lock
+    pub async fn bump_fee(&self, txid: Txid, fee_rate: FeeRate) -> Result<ReviewSummary, EngineError>;
+    pub fn parse_payment_link(&self, s: &str) -> Result<PaymentLink, EngineError>;
+    pub fn make_payment_link(&self, address: &str, amount: Option<Amount>) -> Result<String, EngineError>; // + require_payable
+    // claim
+    pub fn claim_supported_types(&self) -> Vec<ClaimScriptType>;
+    pub async fn claim_start(&self, xpub: ScannedPayload) -> Result<u64, EngineError>;
+    pub async fn claim_scan(&self, claim_id: u64, search_further: bool) -> Result<FoundSummary, EngineError>; // cancellable(abort_net, abort_claim)
+    pub async fn claim_build(&self, claim_id: u64, destination: Option<&str>, fee_rate: FeeRate) -> Result<ClaimReview, EngineError>;
+    pub async fn claim_finish(&self, claim_id: u64, signed: Vec<ScannedPayload>) -> Result<Vec<BroadcastOutcome>, EngineError>; // slot dropped only if all Sent
+    pub async fn claim_cancel(&self, claim_id: u64);
+    pub async fn claim_active(&self) -> bool;
+    // crate / test
+    pub(crate) async fn connect_with_stream(&self, stream: BoxStream, route: Route) -> Result<ConnectionStatus, EngineError>;
+    #[cfg(test)] pub(crate) fn with_test_dialer(self, f: Arc<dyn Fn(Purpose) -> Arc<dyn Dialer> + Send + Sync>) -> Self;
+    #[cfg(any(test, feature = "test-hooks"))] pub async fn debug_allow_pre_split_history(&self);
+    #[cfg(feature = "test-hooks")] pub async fn debug_sign_review(&self, review_id: u64) -> Result<Transaction, EngineError>;
+}
+```
+Removed: `load_wallet`.
+
+Claim check order: `touch` (Locked) → Tor rule (`st.tor || claim_direct_allowed(server)`, else `Claim(CLAIM_NEEDS_TOR)`) → `verified` → session id.
+
+State and fields:
+```rust
+pub struct WrenEngine {
+    cfg: EngineConfig,
+    vault: Arc<dyn KeyVault>,
+    st: tokio::sync::Mutex<State>,
+    status: std::sync::Mutex<ConnectionStatus>,   // snapshot; written by publish()
+    abort_net: tokio::sync::watch::Sender<u64>,   // set_server, set_tor, disconnect, lock
+    abort_claim: tokio::sync::watch::Sender<u64>, // claim_cancel, lock
+    #[cfg(feature = "tor")] tor: tokio::sync::OnceCell<Arc<Tor>>,
+    #[cfg(test)] test_dialer: Option<Arc<dyn Fn(Purpose) -> Arc<dyn Dialer> + Send + Sync>>,
+}
+struct State {
+    server: ServerAddress, tor: bool, chain: HeaderChain,
+    client: Option<Arc<ElectrumClient>>, verified: bool, route: Option<Route>,
+    wallet: Option<WrenWallet>, pending: PendingPayments,
+    claim: Option<ClaimSlot>, next_claim_id: u64,
+    setup: Option<PendingSetup>, last_activity: Option<tokio::time::Instant>,
+    challenge: Option<[u8; 3]>, allow_pre_split_history: bool,
+}
+struct ClaimSlot { id: u64, session: ClaimSession, client: Option<Arc<ElectrumClient>> }
+struct PendingSetup { seed: SeedSecret, kind: SetupKind, backup_confirmed: bool, checked: bool }
+enum SetupKind { Created, Restored }
+#[derive(Clone, Copy, PartialEq, Eq)] pub(crate) enum Purpose { Wallet, Claim, Probe }
+```
+
+### Shared signatures
+```rust
+// params.rs (Task 6 A + B + M9)
+#[derive(Clone, Debug)]
+pub struct ChainParams {
+    pub network: Network, pub split_height: u32, pub blake2b_height: u32,
+    pub anchor: Checkpoint, pub checkpoints: Vec<Checkpoint>, pub pow_limit: U256,
+    pub fixed_bits: Option<u32>, pub blake2b_shift: u32,
+    pub anchor_prev_times: Vec<u32>, pub pre_anchor_chain_work: U256, pub min_chain_work: U256,
+    pub pre_anchor_root: Option<HeaderCheckpointRoot>,
+    pub long_maturity_start: u32, pub long_maturity_end: u32,
+    pub coinbase_maturity_long: u32,   // 6_480 mainnet, 100 regtest; consensus long window AND Knots relay rule for every coinbase
+}
+// builders: with_anchor, with_anchor_prev_times, with_min_chain_work, with_pre_anchor_root, with_long_maturity(start, end, blocks)
+// Task 22: ChainParams::regtest(SPLIT).with_long_maturity(210, 330, 120)
+
+// headerchain.rs: original API plus
+#[derive(Clone)] pub struct HeaderChain;
+pub const MAX_FUTURE_BLOCK_TIME: u64 = 7200;
+pub fn extend(&mut self, start: u32, raws: &[Vec<u8>]) -> Result<(), EngineError>;            // atomic, no clock
+pub fn extend_at(&mut self, start: u32, raws: &[Vec<u8>], now: u64) -> Result<(), EngineError>; // atomic, 2 h bound
+pub fn work_above(&self, height: u32) -> U256;
+pub fn chain_work(&self) -> U256;
+pub fn meets_min_work(&self) -> bool;
+pub fn reached_activation(&self) -> bool;
+
+// sync.rs
+pub struct HeaderSyncOutcome { pub tip_height: u32, pub tip_time: u32, pub reorg_from: Option<u32> }
+pub async fn sync_headers(client: &ElectrumClient, chain: &mut HeaderChain, known: &[(u32, [u8; 32])], now: u64) -> Result<HeaderSyncOutcome, EngineError>;
+pub struct WalletSyncReport { pub pre_split_history: bool, pub unverified_pre_split: Vec<(Txid, u32)> }
+pub(crate) struct FetchResult {
+    pub update: Update,
+    pub own_missing: Vec<Arc<Transaction>>,       // rebroadcast by sync_wallet
+    pub unverified_pre_split: Vec<(Txid, u32)>,
+    pub held_back: Vec<Arc<Transaction>>,         // txid-checked, never inserted: unverified pre-split, and unconfirmed when !admit_unconfirmed
+}
+pub(crate) async fn fetch_confirmed_update(client: &ElectrumClient, chain: &HeaderChain, wallet: &Wallet,
+    found: &HashMap<Txid, i64>, admit_unconfirmed: bool, now: u64) -> Result<FetchResult, EngineError>;
+pub async fn sync_wallet(client: &ElectrumClient, chain: &HeaderChain, wallet: &mut Wallet, now: u64) -> Result<WalletSyncReport, EngineError>;
+pub(crate) fn verify_our_p2wpkh_inputs(tx: &Transaction, spent: &[TxOut], ours: &dyn Fn(&Script) -> bool) -> Result<(), EngineError>;
+// pre_anchor_header: only Err(Server(ServerError::Rejected(_))) -> Ok(None); all other errors propagate.
+
+// electrum
+pub fn verify_merkle(txid: &Txid, proof: &MerkleProof, root: &[u8; 32], txcount: Option<u32>) -> bool;
+pub fn verify_header_proof(raw: &[u8], height: u32, branch: &[[u8; 32]], cp: &HeaderCheckpointRoot) -> bool;
+impl Rpc {
+    pub fn new(stream: BoxStream, poisoned: Arc<AtomicBool>) -> Self;
+    pub async fn call(&mut self, method: &str, params: Value) -> Result<Value, EngineError>;
+    pub async fn batch<T>(&mut self, calls: &[(&str, Value)],
+        decode: impl FnMut(usize, Value) -> Result<T, EngineError>) -> Result<Vec<T>, EngineError>;
+    // error reply -> Server(Rejected(classify_reject(msg))) without poisoning; every other early return, including a decode Err, poisons
+}
+pub(crate) fn classify_reject(msg: &str) -> RejectKind;
+impl ElectrumClient {
+    pub fn is_poisoned(&self) -> bool;
+    pub async fn header_with_proof(&self, height: u32, cp_height: u32) -> Result<(Vec<u8>, Vec<[u8; 32]>), EngineError>;
+    pub async fn transaction_known(&self, txid: &Txid) -> Result<bool, EngineError>;
+    pub async fn relay_fee(&self) -> Result<Option<FeeRate>, EngineError>;
+    pub async fn estimate_fee(&self, blocks: u32) -> Result<Option<FeeRate>, EngineError>;
+}
+
+// wallet.rs
+impl WrenWallet {
+    pub(crate) fn create(db_path: &Path, network: Network, keys: &KeySource) -> Result<Self, EngineError>;
+    pub fn open(db_path: &Path, network: Network) -> Result<Self, EngineError>;
+    pub fn exists(db_path: &Path) -> bool;
+    pub fn fingerprint(&self) -> Fingerprint;
+    pub fn flag(&self, f: MetaFlag) -> Result<bool, EngineError>;
+    pub fn set_flag(&mut self, f: MetaFlag, v: bool) -> Result<(), EngineError>;
+    pub fn sweep_txid(&self) -> Result<Option<Txid>, EngineError>;
+    pub fn set_sweep_txid(&mut self, t: Txid) -> Result<(), EngineError>;
+    pub fn balance(&self, params: &ChainParams) -> WrenBalance;
+    pub fn next_receive_address(&mut self) -> Result<Address, EngineError>;   // MAX_UNUSED_RECEIVE = 10
+    pub fn next_claim_address(&mut self) -> Result<Address, EngineError>;     // always fresh; refuses if unused run > STOP_GAP - 1
+}
+
+// payment.rs
+pub struct PendingPayments; // id -> (Psbt, ReviewKind, ReviewSummary); kind(), unsigned_txid(), summary()
+pub fn bump_fee(w: &mut WrenWallet, params: &ChainParams, tip: u32, pending: &mut PendingPayments, txid: Txid, fee_rate: FeeRate) -> Result<ReviewSummary, EngineError>;
+pub(crate) fn sign_pending(keys: &KeySource, psbt: &Psbt) -> Result<Transaction, EngineError>;
+pub(crate) fn sign_and_record(w: &mut WrenWallet, keys: &KeySource, pending: &mut PendingPayments, review_id: u64, now: u64) -> Result<Transaction, EngineError>;
+pub(crate) async fn broadcast_recorded(client: &ElectrumClient, tx: &Transaction) -> BroadcastOutcome;
+pub async fn sign_and_broadcast(w: &mut WrenWallet, keys: &KeySource, pending: &mut PendingPayments, review_id: u64,
+    client: &ElectrumClient, now: u64) -> Result<BroadcastOutcome, EngineError>;  // = sign_and_record + broadcast_recorded
+pub(crate) fn map_create_tx(e: CreateTxError) -> EngineError;
+
+// claim
+pub enum NotClaimedReason { Unconfirmed, Uneconomic, TooLargeForQr, Immature, Unverified }
+pub struct NotClaimed { pub script_type: ClaimScriptType, pub reason: NotClaimedReason, pub coins: usize, pub amount: Amount }
+pub struct FoundSummary { pub total: Amount, pub coins: usize, pub by_type: Vec<(ClaimScriptType, Amount, usize)>,
+    pub not_claimable: Vec<NotClaimed>, pub gap_used: u32, pub types_scanned: Vec<ClaimScriptType> }
+pub struct ClaimSession { pub(crate) network: Network, pub(crate) wallets: Vec<(ClaimScriptType, Wallet)>,
+    pub(crate) plan: Option<ClaimPlan>, pub(crate) own_destinations: Vec<Address>, pub(crate) sent: Vec<bool> }
+pub struct ClaimTx { pub script_type: ClaimScriptType, pub destination: Address, pub psbt: Psbt, pub inputs: usize,
+    pub amount: Amount, pub fee: Amount, pub qr_frames: Vec<String> }
+pub struct ClaimPlan { pub txs: Vec<ClaimTx>, pub total_in: Amount, pub total_fee: Amount, pub total_out: Amount,
+    pub not_claimed: Vec<NotClaimed>, pub abnormal_fee: bool }
+pub enum ClaimDestination { OwnWallet, Elsewhere(Address) }
+impl ClaimSession {
+    pub async fn scan(&mut self, client: &ElectrumClient, chain: &HeaderChain, search_further: bool, now: u64) -> Result<FoundSummary, EngineError>;
+    pub fn build(&mut self, params: &ChainParams, tip: u32, dest: ClaimDestination,
+        next_own: &mut dyn FnMut() -> Result<Address, EngineError>, fee_rate: FeeRate) -> Result<&ClaimPlan, EngineError>;
+    pub(crate) fn build_with_limits(&mut self, params: &ChainParams, tip: u32, dest: ClaimDestination,
+        next_own: &mut dyn FnMut() -> Result<Address, EngineError>, fee_rate: FeeRate,
+        max_inputs: usize, max_bytes: usize) -> Result<&ClaimPlan, EngineError>;  // refuses once any sent[i]
+    pub async fn finish(&mut self, signed: Vec<ScannedPayload>, client: &ElectrumClient) -> Result<Vec<BroadcastOutcome>, EngineError>;
+}
+// ClaimSession.client and connect_isolated are removed. SkippedCoin, SkipReason and ClaimPlan.skipped are removed.
+
+// testutil.rs (MockWorld; MockWorld::new initialises every field)
+pub struct MockWorld {
+    pub chain: TestChain, pub history: HashMap<String, Vec<(Txid, i64)>>, pub txs: HashMap<Txid, Transaction>,
+    pub tx_override: HashMap<Txid, Transaction>, pub merkle: HashMap<Txid, (u32, u32, Vec<[u8; 32]>)>,
+    pub broadcasts: Vec<Transaction>,
+    pub relay_fee: f64, pub fee_estimate: f64, pub broadcast_mode: BroadcastMode,      // B: 0.00001, 0.00002, Accept
+    pub pre_anchor: Vec<Vec<u8>>, pub pre_anchor_served: HashMap<u32, Vec<u8>>, pub cp_supported: bool, // A: cp_supported = true
+    pub log: Vec<(u32, String, Value)>,                                                // C
+}
+pub enum BroadcastMode { Accept, Reject(String), RecordThenFail, LieOk }
+pub fn serve(world: Arc<Mutex<MockWorld>>) -> BoxStream;                        // = serve_tagged(world, 0)
+pub fn serve_tagged(world: Arc<Mutex<MockWorld>>, tag: u32) -> BoxStream;       // carries A's cp arm and B's fee/broadcast arms
+pub fn serve_stalling(world: Arc<Mutex<MockWorld>>, answer_first_n: usize) -> BoxStream;
+pub fn abandon_keys() -> KeySource;                                              // Task 12a; used by pre-Task-20 wallet tests
+// mine, mine_bits, TEST_NOW (Task 6); header_tree, TestChain::params_with_pre_anchor (Task 13); Funded.keys (Task 14)
+```
+
+### Conflict resolutions (numbered; binding)
+
+#### A. `EngineError` and error text
+
+1. **Task 1 B vs C/E/D, variants declared in three places.** B rewrites the enum, C adds `Cancelled`/`CertificateChanged`, E adds `DangerousSignature`, D (12a) adds seven more.
+   - **Resolution:** declare each variant exactly once. Task 1 holds the base set plus the B, C and E variants; Task 12a appends D's seven (final enum below).
+   - Give `Cancelled` and `AuthCancelled` different messages; both are currently "cancelled".
+2. **`Server("...".into())` left in Area A (Task 11) and Area C (Task 9), which no longer compiles under `Server(ServerError)`.**
+   - "server is behind the chain" → `ServerError::Behind`; "server returned no headers" → `NoHeaders` (B already supersedes these two A sites).
+   - "response too large" → `TooLarge`.
+   - "server sent too many unsolicited messages" → `TooLarge`.
+   - "server speaks an unsupported Electrum protocol version" → new `ServerError::UnsupportedProtocol`.
+   - "address history too large" → new `ServerError::HistoryTooLarge`. C's test asserts `Err(Server(ServerError::HistoryTooLarge))`.
+   - Unparsable version replies → `Malformed`.
+3. **`bad()` helper: B makes it argument-free, but A and C still call `bad("tip")`, `bad("merkle")`, `bad("version")`.**
+   - **Resolution:** `fn bad() -> EngineError { EngineError::Server(ServerError::Malformed) }` everywhere in `electrum/`. The `xpub_import` `bad()` (Task 16) is a separate helper and is unaffected.
+4. **`Wallet(&'static str)` (B, Task 1) vs `.into()`/`to_string()` callers elsewhere.**
+   - Callers: A Task 11 `save_chain` (`Wallet(e.to_string())`); D Task 12a `open_sealed` and `KeySource::from_seed` (5 sites); D Task 20 `open_seed` and `unlock` (3 sites).
+   - **Resolution:** drop `.into()` everywhere. `save_chain` uses `|_| EngineError::Wallet("could not save the header chain")`.
+5. **`Network(String)` used inconsistently.** C writes both `Network("connection lost")` (a `&str`) and `Network("Tor ...".into())`. Separately, `net(e)` puts io/Arti/rustls text into errors; that text can include host:port and digits, which breaks the doc promise and the "no raw error text" decision.
+   - **Resolution:** change it to `Network(&'static str)`.
+   - `fn net<E>(_: E) -> EngineError { EngineError::Network("could not reach the server") }`.
+   - Timeouts → `Network("the server did not answer in time")`.
+   - Poisoned → `Network("connection lost")`.
+   - Plus `Network("Tor did not start within 2 minutes")` and `Network("this build does not include Tor")`.
+6. **D's `KeyVault`.** The brief mentions `NoKeyVault`; nothing in the file uses that name. Keep `KeyVault`.
+
+#### B. Electrum client, errors and poisoning
+
+7. **Task 13 A `pre_anchor_header` matches `Err(EngineError::Server(_)) => None`.** Under B and C, Malformed, TooLarge and InvalidTransaction all poison the client. A malformed proof is also a "present but wrong" proof and must fail.
+   - **Resolution:** match only `Err(EngineError::Server(ServerError::Rejected(_))) => None`, which is the JSON-RPC error reply such as electrs' one-argument `blockchain.block.header`. Every other error propagates.
+8. **`Rpc::batch`: B edits the error branch, C replaces the whole body.**
+   - **Resolution:** use C's algorithm. Step 7 becomes `Err(Server(ServerError::Rejected(classify_reject(msg))))`, without poisoning.
+   - State explicitly that an `Err` from the `decode` closure also poisons, because unread replies desynchronise the stream.
+
+#### C. Header sync and chain parameters
+
+9. **`sync_headers` arity.** C Task 20 `open_claim_client` calls `sync_headers(&client, &mut probe)`, the old 2-argument form.
+   - **Resolution:** `sync_headers(&client, &mut probe, &[], now())`.
+10. **`ChainParams` maturity (B's `coinbase_relay_maturity` vs E/M9).** Task 22 sets Knots `-testcoinbasematuritylong=210:210:330` (long maturity 120). B's `spendable::immature_coinbase` hard-codes 6,480, and regtest uses relay maturity 100 with a window of `u32::MAX`, so Wren would call a coin mature at 100 while Knots needs 120. The M9 boundary test (`mine(118)` immature, `+1` mature) fails.
+    - **Resolution:** replace `coinbase_relay_maturity` with one field `coinbase_maturity_long: u32` (6_480 mainnet, 100 regtest). It is used for both the consensus long window and the relay rule, because Knots relay uses `CoinbaseMaturityLong`.
+    - Add the builder `with_long_maturity(start, end, blocks)`.
+    - Task 22 `engine()` uses `ChainParams::regtest(SPLIT).with_long_maturity(210, 330, 120)`. Confirm the three flag fields against Knots `chainparams.cpp` before pinning.
+    - Rename the B test to `long_maturity_is_6480_on_mainnet_and_100_on_regtest`.
+11. **`HeaderChain: Clone` is defined in both Task 6 A and Task 6 C.** This is a duplicate, not a conflict; keep A's line and delete C's block.
+12. **Owner-data timing.** The product decision says the constants are needed "before Task 6 is implemented", but Task 5 Step 0 already needs `mainnet-retargets.txt`.
+    - **Resolution:** "before Task 5" everywhere (header and Owner-data heading already say so). Fix the decision bullet and the review "Data still needed before Task 6" line.
+
+#### D. Sync, broadcast and the Task 13/14 shape
+
+13. **Task 13 has three different return shapes for `fetch_confirmed_update`/`sync_wallet`.** A: `VerifiedUpdate`, args unchanged, sync returns `WalletSyncReport`. B: new args, `FetchResult`, sync returns `()`. D: sync returns `SyncReport`.
+    - **Resolution:** use B's arguments and a merged `FetchResult` (see the reconciliation section), with `sync_wallet -> WalletSyncReport`. Drop D's `SyncReport`.
+    - Compute `pre_split_history` from the reported heights (D's rule; A's is equivalent).
+    - Duplicate tests: drop A's `report_flags_pre_split_history`; keep D's two.
+    - The Task 19 B retry also uses `client.transaction_known(&txid).await?`. After a broadcast timeout, C's poisoned client fails at once and the `?` loses the per-transaction outcomes and the `sent` flags. **Resolution:** call `transaction_known(..).await.unwrap_or(false)`; on any error keep `Unknown(txid)`.
+14. **Unconfirmed and unverified amounts for the claim report (B vs E vs A).**
+    - B: the claim scan never fetches unconfirmed transactions and counts them in `unconfirmed_ignored`.
+    - E: removes `unconfirmed_ignored` and lists `NotClaimed{Unconfirmed, coins, amount}`, which needs the amount.
+    - A: skips fetching unverified pre-split transactions, but E wants `Unverified` entries with amounts.
+    - **Resolution:** `fetch_confirmed_update` still fetches (txid-checked) both kinds but never inserts them. It returns them in `FetchResult.held_back`, and `scan` builds `NotClaimed` entries from the outputs that pay the scanned scripts.
+    - Remove `unconfirmed_ignored` and `unconfirmed_seen`.
+    - Rewrite B's `claim_scan_ignores_server_invented_unconfirmed_spend` to assert `found.coins == 1` and that `not_claimable` has no `Unconfirmed` entry (the fake spend pays a foreign script).
+15. **Engine `sign_and_broadcast` return type.** D Task 20 returns `Result<Txid>` and uses `out_is_definite_rejection`; B returns `BroadcastOutcome`, and D's own Task 14 says to keep B's type. D also holds the state lock across `client.broadcast`, which can take up to 90 s. That contradicts C's rule that `set_server`/`set_tor`/`disconnect` never wait on the state lock.
+    - **Resolution:** return `Result<BroadcastOutcome>`.
+    - Split the payment function into `payment::sign_and_record(..) -> Result<Transaction>` (under the lock: sign, `apply_unconfirmed_txs`, persist) and `payment::broadcast_recorded(client, &tx) -> BroadcastOutcome` (lock released, `Arc` client cloned).
+    - Keep `payment::sign_and_broadcast` as the composition for the Task 14 tests.
+    - `claim_finish` likewise does `st.claim.take()`, releases the lock, runs `finish`, then re-locks and puts the slot back only if not every outcome is `Sent`. Drop it if `lock()` or a new `claim_start` happened in between.
+16. **BTC-seed one-send-all (D) vs rejected or lost broadcasts (B).** B keeps a `Rejected` or `Unknown` transaction recorded with its inputs locked, and Speed up is the only recovery. D refuses `bump_fee` while `BtcHistoryDetected` is set, so a rejected or stuck sweep can never move.
+    - **Resolution:** set `BtcSweepUsed = true` and store `btc_sweep_txid` in `wren_meta` (new `WrenWallet::{sweep_txid, set_sweep_txid}`) under the lock right after `sign_and_record` succeeds. This fails safe.
+    - `btc_seed_gate` also allows `ReviewKind::Bump` when the bumped txid equals `sweep_txid`, and updates `sweep_txid` to the replacement after signing.
+    - D's test: `bump_fee` of a non-sweep transaction gives `SeedHoldsBtc`; bump of the sweep is allowed.
+17. **`payment::review_summary(w, &pending, id)` (D Task 20) is defined nowhere.**
+    - **Resolution:** `PendingPayments` stores `(Psbt, ReviewKind, ReviewSummary)`, with `pub(crate) fn summary(&self, id) -> Option<&ReviewSummary>`.
+    - `SendApproval::from` maps `to_self` and `abnormal_fee` unconditionally; B adds them in Task 14, so drop D's "when those fields exist" hedge.
+    - `map_create_tx` (Task 14) must be `pub(crate)`; Task 18 calls it.
+
+#### E. Claim (Tasks 17-20)
+
+18. **Fresh destination per claim transaction (E, product decision) vs `MAX_UNUSED_RECEIVE` (B).** E's closure `|| wallet.next_receive_address()` returns the oldest unused address once 10 are revealed, so several claim transactions would share one address.
+    - **Resolution:** new `WrenWallet::next_claim_address(&mut self) -> Result<Address, EngineError>`. It always calls `reveal_next_address(External)` and persists.
+    - It refuses with `Claim("this claim needs too many new addresses; claim fewer coins at once")` if the unused run would exceed `STOP_GAP - 1` (19), so restore still finds every payment.
+    - The `claim_build` closure calls it; `own_destinations` gives reuse across rebuilds.
+19. **`ClaimSession` client ownership: three designs.** C: `ClaimSlot.client` in the engine, `scan`/`finish` take `&ElectrumClient`. E: `ClaimSession.client` plus `finish(signed)` with no client and `connect_isolated()`. B: `finish(&[..], client)`.
+    - **Resolution:** keep C's `ClaimSlot{id, session, client: Option<Arc<ElectrumClient>>}` and `open_claim_client`.
+    - Delete `ClaimSession.client` and `connect_isolated`.
+    - `finish(&mut self, signed: Vec<ScannedPayload>, client: &ElectrumClient) -> Result<Vec<BroadcastOutcome>>`, using E's `Vec` (needed for zeroize) and B's return type.
+20. **Restore order in Task 22.** Area D restores at height 121 (`restore_wallet` → `restore_check` → `finish_setup` after `mine(101)`, now `mine(121)` per E). Area A's rules cannot verify a chain below activation (200), so `restore_check` and `sync_to_tip` always fail. The original suite also needs the engine wallet to exist before the split to get `wren_addr0`.
+    - **Resolution:** derive `wren_addr0` in the test from `master(WREN_WORDS)` at m/84'/0'/0'/0/0 (the test already derives `key0` there) and fund it with `fund(...)` before the split.
+    - After `mine(SPLIT + 5 - height())`: `e.debug_allow_pre_split_history().await; sync_to_tip(&e).await; e.restore_wallet(WREN_WORDS.into(), "".into()).await?; e.restore_check().await?; e.finish_setup().await?; sync_to_tip(&e).await;`.
+    - The allow flag must come before `restore_check`, which honours it; D placed it after.
+    - A's Task 22 block: delete `early.restore_wallet(WREN_WORDS, "")`. It is not needed and uses the old signature.
+    - Mechanical updates in Task 22 (no area covers them):
+      - `.confirmed` → `.spendable`;
+      - `let txid = e.sign_and_broadcast(..)?` → `let BroadcastOutcome::Sent(txid) = .. else { panic!() }`, likewise for `slow`/`fast`;
+      - `claim_finish(..)` → `Vec<BroadcastOutcome>` instead of `txids[0]`;
+      - E Step 6 asserts `Ok(BroadcastOutcome::Sent(_))`.
+21. **Task 18 B vs E `ClaimPlan` and build shape.**
+    - **`build` signature:** merge B's `(params, tip, &dest, fee_rate)` and E's `(ClaimDestination, next_own, fee_rate)` into one (see the reconciliation section). Name the internal variant `build_with_limits` (E).
+    - **Skip reporting:** B's `SkippedCoin`/`SkipReason`/`ClaimPlan.skipped` vs E's `NotClaimed`/`not_claimed`. Use E's types only; immature coins become `NotClaimedReason::Immature`, aggregated per (type, reason).
+    - **Uneconomic threshold:** B's descriptor-derived `input_fee` (164 wu + `max_weight_to_satisfy` + 1 wu for taproot, rounded up) vs E's fixed 272/364/592/231 WU table. Keep B's `input_fee`.
+    - **Build errors:** `build_one`/`sweep` return `Result<Psbt, CreateTxError>`. `CoinSelection(_) | OutputBelowDustLimit(_)` → that chunk is `Uneconomic`; anything else → `map_create_tx`.
+    - **Fee check:** the first statement is `check_fee_rate(fee_rate)?`. Remove E's separate "MAX_FEE_RATE next to the floor" line.
+    - **Empty-plan error:** keep E's reason-dependent wording (not B's single message), and keep B's `abnormal_fee`.
+    - **Duplicate test name:** both areas have `uneconomic_coins_are_skipped_and_reported`. Keep E's; rename B's P2PKH-500 case to `uneconomic_p2pkh_coin_is_reported_per_type` and assert `not_claimed == [NotClaimed{P2pkh, Uneconomic, 1, 500 sat}]`.
+    - **B×E gap:** after any `sent[i]` is true, `build` refuses with `Claim("part of this claim was sent; finish or cancel it")`. Otherwise a rebuild re-spends the same inputs and resets `sent`.
+22. **Task 20 `claim_build`: B's `default_destination` and `.build(params, tip, &dest, ..)` vs E's `OwnWallet` and `own_destinations`.** Use E's design with #18 and the merged signature.
+    - `ClaimReview` merges B's `abnormal_fee` with E's `not_claimed` and per-transaction `destination`; drop B's `skipped`.
+    - Duplicate: drop B's `claim_build_reuses_destination_across_rebuilds`; keep E's `claim_build_reuses_own_destinations_on_rebuild`.
+23. **Claim Tor rule: E vs C.** E checks `self.cfg.tor` and exempts all of regtest. C uses the current `st.tor` and exempts only regtest with a loopback `Tcp` server (`claim_direct_allowed`).
+    - **Resolution:** C's rule, with E's `CLAIM_NEEDS_TOR` constant replacing C's literal.
+    - Check order in `claim_scan`/`claim_finish`: `touch` (`Locked`), then the Tor rule, then `verified` (`NotVerified`), then the session id.
+24. **Tor test duplicates that cannot run as written.** C `claim_requires_tor_on_mainnet` and E `claim_scan_refuses_without_tor_on_mainnet` both need "a restored wallet" on mainnet params. Under D, restore needs `restore_check` on a verified connection, and A's mainnet checkpoints, activation and min-work cannot be met by a MockWorld.
+    - **Resolution:** one test, `claim_requires_tor_unless_regtest_loopback`. Regtest params with `server: Tls{host:"electrum.example.com", port:50002, pinned_spki_sha256:None}` and `tor:false`, then connect via `connect_with_stream`, `setup_restored`, `claim_start`.
+    - `claim_scan` gives `Claim(CLAIM_NEEDS_TOR)`, and the test dialer records no `Purpose::Claim` dial.
+    - Also merge E `claim_uses_its_own_connection` into C's `claim_scan_uses_its_own_session` and `claim_finish_broadcasts_on_the_claim_session`. Keep E's `claim_cancel_and_finish_drop_the_claim_connection`.
+
+#### F. Engine lifecycle and locking (Task 20)
+
+25. **`lock()` (D) vs C's no-wait rules.** `lock()` takes the state lock, which `claim_scan`/`sync` can hold for minutes, so "lock on app background" would hang.
+    - **Resolution:** `lock()` first does `abort_claim.send_modify(|g| *g += 1)` and `abort_net.send_modify(..)`, then locks and clears.
+    - Add `restore_check` to the `cancellable(abort_net, ..)` list; it does network sync under the lock.
+26. **`new` / `with_vault` / the test dialer.** D: `new` needs the installed vault; C: `new` runs the `RoutePolicy` check and has a `#[cfg(test)] test_dialer` field with no setter; A: `new` sets aside a corrupt `headers.bin`.
+    - **Resolution:** `new` does all three: vault, then policy, then header store.
+    - Add `#[cfg(test)] pub(crate) fn with_test_dialer(self, f) -> Self`.
+    - Every engine test helper uses `WrenEngine::with_vault(cfg{server: Tcp{"127.0.0.1",1}}, TestVault::new())`.
+27. **Global `OnceLock` vault.** D's `install_key_vault_succeeds_once` (Task 12a, inline) installs the process-global vault in the same lib test binary as D's `new_without_installed_vault_fails` (Task 20, inline), so the result depends on test order.
+    - **Resolution:** move `install_key_vault_succeeds_once` to its own integration binary `tests/vault_install.rs`.
+28. **`ConnectionStatus`: A adds `tip_time`/`stale_tip`; C removes `tor`, adds `route` and an optional `tor_progress`.** C's spec change makes Tor progress mandatory on Home.
+    - **Resolution:** use the struct in the reconciliation section and make `tor_progress` required.
+    - Compute `stale_tip` at read time in `connection_status()` from the snapshot's `tip_time`: `now().saturating_sub(t) > STALE_TIP_SECS`. Saturating, because a tip may be up to 2 h in the future. If computed in `publish()`, the snapshot goes stale.
+
+#### G. Ordering and duplicates
+
+29. **Task 1 E `check.sh` uses `--features test-hooks`, but D defines `[features] test-hooks = []` in Task 12a.** Cargo errors on the unknown feature from Task 1 on.
+    - **Resolution:** define the feature in Task 1 Step 8's `Cargo.toml`. Task 12a only uses it.
+30. **Task 16 A and E both rewrite L4565-4567 and both add path tests.**
+    - **Resolution:** use E's code (`comps.is_empty() || odd`, `chunks_exact`, `try_from`), plus A's `try_from` for the parent fingerprint (L4570) and master fingerprint (L4586).
+    - Drop A's `ur_path_with_odd_length_is_refused` and `ur_path_index_beyond_u32_is_refused` (covered by E's `ur_odd_length_or_oversized_component_refused`); keep A's `ur_fingerprint_beyond_u32_is_refused`.
+31. **Tests written before D's Task 12 change break.** Tests in Tasks 12 (B), 13 (B), 14 and 17-19 build a `WrenWallet` from words with the old `create(.., words, passphrase)`.
+    - **Resolution:** add `testutil::abandon_keys() -> KeySource` (Task 12a) and call `WrenWallet::create(&p, net, &abandon_keys())`.
+32. **Task 22a uses crate-private items from an integration test.** `tests/seedsigner_fixtures.rs` names `SigClass` (pub(crate)) and `verify_and_finalize`.
+    - **Resolution:** assert `Err(EngineError::DangerousSignature)` instead of `SigClass::Dangerous`.
+    - Re-export `read_signed_psbt`, `verify_and_finalize` and `ClaimTx::from_fixture` under `#[cfg(feature = "test-hooks")]`, and run that test with `--features test-hooks`.
+
+#### H. Spec text
+
+33. **Spec §5 Home is replaced by both A and C.** Merged: "A status line showing the route actually in use (Tor or direct), the server connection, Tor start-up progress, and a warning when the server's latest block is more than 2 hours old."
+    - Spec §4.1 Scanning is replaced by both C and E: use E's text, with C's "The scan and the broadcast run on their own Tor circuit".
+    - §3.1 should also list `setServer`, `setTor`, `disconnect` and `probeCertificate`.
+34. **Product decision "Seed words cross JS only at Create, Restore, Reveal" vs D's `confirm_backup(answers: Vec<String>)`.** That call sends 3 seed words across the bridge at the backup check.
+    - **Resolution (owner to confirm):** keep the API and amend the decision and spec §3.2 to "...and three of them typed back at the backup check". The alternative is to make backup confirmation native.
+
+#### I. Labels and counts
+
+35. **Mislabelled areas.**
+    - E Task 18 "Area D's MAX_FEE_RATE" → Area B.
+    - E Task 17 `Immature /* Area D */, Unverified /* Area B */` → Immature is Area B, Unverified is Area A.
+    - E Task 22 "WrenBalance.immature (Area D) and Area D destination refusal" → Area B.
+    - The final "Merge notes" line "Unverified ... from Areas D and B" → Area A.
+    - **Merged test counts:** Task 6: 19; Task 9: 22; Task 12: 6; Task 13: 14; Task 16: about 23; Task 18: 13; Task 20: 37.
+
+**Intra-area issues noticed (not cross-area)**
+- **D `wallet_presence`:** an orphan `wallet.sqlite` with no sealed blob reports `None`, but `finish_setup` then fails on create every time. `finish_setup` should rename the orphan to `wallet.sqlite.orphan` (never delete it).
+- **A `verify_merkle`:** `proof.merkle.len() as u32` should be `u32::try_from(..).ok() != Some(depth)`, per A's own no-`as` rule.
+
+---
 
 ## Global sections (constraints, review focus, file structure, coverage map, research)
 

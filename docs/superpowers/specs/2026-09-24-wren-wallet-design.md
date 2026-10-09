@@ -132,7 +132,7 @@ the bridge.
   - `signAndBroadcast(reviewId) -> Sent | Rejected(reason) | Unknown`
   - `bumpFee(txid, newFeeRate)`
   - `feeEstimates() -> slow, normal, fast, unreliable`
-  - `setServer(config)`, `setTor(on)`, `probeCertificate(host, port)`
+  - `setServer(config)`, `setTor(on)`, `disconnect()`, `probeCertificate(host, port)`
   - `connectionStatus()`
   - `parsePaymentLink(uri)`
   - `makePaymentLink(address, amount?)`
@@ -154,9 +154,9 @@ the bridge.
 `uniffi-bindgen-react-native` generates the TypeScript/JSI bindings for iOS and
 Android from the engine's UniFFI interface. The app calls engine functions and
 receives plain results. It never receives keys, the Wren PIN, or the key that
-unlocks the seed. The 12 words pass through the app only three times: when they
-are shown at Create, typed at Restore, and shown by View recovery phrase after
-the Wren PIN.
+unlocks the seed. The 12 words pass through the app only when they are shown at
+Create, typed at Restore, and shown by View recovery phrase after the Wren PIN;
+three of them are also typed back at the backup check.
 
 ### 3.3 App (React Native, Expo)
 
