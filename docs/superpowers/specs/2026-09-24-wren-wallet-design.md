@@ -72,7 +72,7 @@ sub-project 1 only.
 | Default server | A project-run server on rented hosting. Users can switch to their own node. |
 | Open source | Yes. MIT license, public repository before the first public beta. Users can verify the code that holds their money, as with Aqua, Sparrow, and Shrike. |
 | Monetization | None in the wallet v1: no fees, no paid features, no in-app tipping. Donations go through a web page. |
-| Visual style | Deep forest/olive green gradient, frosted glass panels, glossy 3D green hero object, white type. Dark-first. |
+| Visual style | Warm red gradient (vermilion to crimson to deep oxblood, the XBT/Shrike red family), frosted glass panels, a glossy red coin with the faceted wren logo as the hero object, white type. Dark-first. Matches wrenwallet.app. |
 
 ---
 
@@ -375,25 +375,41 @@ controls the user's BTC, so the rules are strict:
 
 ## 6. Visual design
 
+The app matches the website (wrenwallet.app). The palette is the red family used
+by the XBT community and the Shrike wallet, not BTC orange. It was derived from
+the original green design by keeping each color's lightness and relative
+strength and turning the hue to red, so the depth and fade carry over.
+
 - **Dark mode (primary):**
-  - Background gradient from olive `#4E7A23` at the top-left to deep forest
-    `#133A1E` at the bottom-right.
-  - Frosted glass panels: a translucent sage fill (`#A9CBA2` at about 35%
-    opacity, fading to `#1E4A28` at about 50%), a backdrop blur, and a 1 px light
-    border at about 20% white.
-  - Accent: bright leaf green `#6CC04A` for primary actions and success states.
-  - Type: white `#FFFFFF` primary, `#FFFFFFB3` secondary. System font, SF Pro on
-    iOS and Roboto on Android.
-- **Light mode:** a soft sage background (`#EEF4EA` to `#D6E6D0`), white frosted
-  panels, forest `#1E4A28` type, and the same accent.
-- **Hero object:** a glossy, glassy 3D green XBT emblem on Home, in the style of
-  the reference's disc. It is static, with a subtle idle shimmer that respects
+  - Background gradient from vermilion `#B83921` at the top-left, through
+    crimson `#571521`, to deep oxblood `#380D14` at the bottom-right, with a
+    soft ember glow (`#FF6040` at about 30%) in the top-left corner.
+  - Frosted glass panels: a translucent rose fill (`#D2B9B6` at about 14-35%
+    opacity), a backdrop blur, and a 1 px light border at about 22% white.
+  - Accents:
+    - Ember coral `#FF7F5F` for highlighted words and focus rings.
+    - Ember red `#F0453A` with white text for the primary action button.
+    - Gold `#FFD666` only for warnings ("Stay safe", the Claim "Stop" screen),
+      so a warning never looks like a normal action.
+  - Type: white `#FFFFFF` primary, white at 88% (`#FFFFFFE0`) secondary,
+    raised from 70% for easier reading. System font, SF Pro on iOS and Roboto
+    on Android, so Dynamic Type and font scaling work everywhere.
+- **Light mode:** a warm off-white background (`#F7EFED` to `#E5DEDD`), white
+  frosted panels, deep wine `#49121C` type (`#6C212B` secondary), and a deeper
+  red accent `#C01D26` with white text on buttons.
+- **Hero object:** on Home, a glossy 3D red coin (highlight `#FFC2B0`, body
+  `#F0453A`, edge `#B7282F`, shadow `#61141F`) carrying the Wren logo: a
+  faceted, low-poly wren, standing upright and alert, in cream-to-rust facets.
+  The sharp facets are a nod to Shrike; the calm, rounded bird says Wren is
+  peaceful and social. It is static, with a subtle idle shimmer that respects
   Reduce Motion.
+- **App icon and splash:** the same red coin and wren. The square icon fills
+  the frame with the red gradient and the wren.
 - **Components:**
   - Large rounded panels (radius 24) and pill buttons.
   - One primary action per screen.
-  - Blur via `expo-blur`, with a solid fallback when the OS has reduced
-    transparency turned on.
+  - Blur via `expo-blur`, with a solid fallback (`#4E161C` at 94%) when the OS
+    has reduced transparency turned on.
 - **Accessibility:**
   - All text meets WCAG AA contrast on its panel.
   - Dynamic Type and font scaling are supported.

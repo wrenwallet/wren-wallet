@@ -50,7 +50,7 @@
     --warn-edge: #a87800;
     --bg:
       radial-gradient(1000px 700px at 0% -10%, rgba(240, 69, 58, 0.18), transparent 60%),
-      linear-gradient(170deg, #eef4ea 0%, #e5dedd 100%);
+      linear-gradient(170deg, #f7efed 0%, #e5dedd 100%);
     color-scheme: light;
   }
 }
@@ -71,7 +71,7 @@ body {
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
-@media (prefers-color-scheme: light) { body { background-color: #eef4ea; } }
+@media (prefers-color-scheme: light) { body { background-color: #f7efed; } }
 
 /* Film grain for depth */
 body::before {
